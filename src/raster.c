@@ -256,13 +256,23 @@ static uint32_t brush_pixel(const raster_brush *brush, int32_t x, int32_t y) {
     }
     int32_t width = brush->pattern.width;
     int32_t height = brush->pattern.height;
-    int32_t px = (x - brush->org_x) % width;
-    int32_t py = (y - brush->org_y) % height;
-    if (px < 0) {
-        px += width;
+    int32_t px;
+    int32_t py;
+    if ((width & (width - 1)) == 0) {
+        px = (x - brush->org_x) & (width - 1);
+    } else {
+        px = (x - brush->org_x) % width;
+        if (px < 0) {
+            px += width;
+        }
     }
-    if (py < 0) {
-        py += height;
+    if ((height & (height - 1)) == 0) {
+        py = (y - brush->org_y) & (height - 1);
+    } else {
+        py = (y - brush->org_y) % height;
+        if (py < 0) {
+            py += height;
+        }
     }
     return raster_get_pixel(&brush->pattern, px, py);
 }
