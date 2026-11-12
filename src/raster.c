@@ -1060,6 +1060,21 @@ void raster_anyblt(const raster_surface *dst, const raster_surface *src, const r
 void raster_line(const raster_surface *dst, const raster_clip *clip,
                  int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                  uint32_t pen, uint8_t rop2) {
+    int fast = dst->format == RASTER_FORMAT_16BPP && rop2 == 13 &&
+               (clip == NULL || clip->kind == RASTER_CLIP_NONE ||
+                clip->kind == RASTER_CLIP_RECT);
+    int32_t clip_left = 0;
+    int32_t clip_top = 0;
+    int32_t clip_right = dst->width;
+    int32_t clip_bottom = dst->height;
+    if (fast && clip != NULL && clip->kind == RASTER_CLIP_RECT) {
+        if (clip->bounds.left > clip_left) clip_left = clip->bounds.left;
+        if (clip->bounds.top > clip_top) clip_top = clip->bounds.top;
+        if (clip->bounds.right < clip_right) clip_right = clip->bounds.right;
+        if (clip->bounds.bottom < clip_bottom) clip_bottom = clip->bounds.bottom;
+    }
+    uint16_t pen16 = (uint16_t)pen;
+
     int32_t dx = abs_int(x1 - x0);
     int32_t dy = -abs_int(y1 - y0);
     int32_t sx = x0 < x1 ? 1 : -1;
@@ -1071,7 +1086,12 @@ void raster_line(const raster_surface *dst, const raster_clip *clip,
         if (x == x1 && y == y1) {
             break;
         }
-        if (x >= 0 && x < dst->width && y >= 0 && y < dst->height && clip_contains(clip, x, y)) {
+        if (fast) {
+            if (x >= clip_left && x < clip_right && y >= clip_top && y < clip_bottom) {
+                ((uint16_t *)row_address(dst, y))[x] = pen16;
+            }
+        } else if (x >= 0 && x < dst->width && y >= 0 && y < dst->height &&
+                   clip_contains(clip, x, y)) {
             uint32_t d = raster_get_pixel(dst, x, y);
             raster_put_pixel(dst, x, y, raster_rop2(rop2, d, pen));
         }
