@@ -665,6 +665,9 @@ static int solid_blend_mask_16(const raster_surface *dst, const raster_surface *
     fill_blend_table(table_b, cb, chan_to8(solid, cb));
 
     int32_t width = rect->right - rect->left;
+    uint32_t last_mval = 0xFFFFFFFF;
+    uint16_t last_d = 0;
+    uint16_t last_out = 0;
     for (int32_t y = rect->top; y < rect->bottom; y++) {
         uint16_t *dest = (uint16_t *)row_address(dst, y) + rect->left;
         const uint8_t *mrow = row_address(mask, mask_y + (y - rect->top)) + mask_x;
@@ -673,11 +676,19 @@ static int solid_blend_mask_16(const raster_surface *dst, const raster_surface *
             if (mval > 114) {
                 mval = 114;
             }
-            const uint8_t *level = brain_cleartype_levels[mval];
             uint16_t d = dest[x];
-            dest[x] = table_r[level[0]][(d & cr.mask) >> cr.shift] |
-                      table_g[level[1]][(d & cg.mask) >> cg.shift] |
-                      table_b[level[2]][(d & cb.mask) >> cb.shift];
+            if (mval == last_mval && d == last_d) {
+                dest[x] = last_out;
+                continue;
+            }
+            const uint8_t *level = brain_cleartype_levels[mval];
+            uint16_t out = table_r[level[0]][(d & cr.mask) >> cr.shift] |
+                           table_g[level[1]][(d & cg.mask) >> cg.shift] |
+                           table_b[level[2]][(d & cb.mask) >> cb.shift];
+            dest[x] = out;
+            last_mval = mval;
+            last_d = d;
+            last_out = out;
         }
     }
     return 1;
