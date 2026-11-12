@@ -47,6 +47,11 @@ typedef struct {
     uint32_t dst_red;
     uint32_t dst_green;
     uint32_t dst_blue;
+    int32_t prepared;
+    uint8_t src_shift[3];
+    uint8_t src_width[3];
+    uint8_t dst_shift[3];
+    uint8_t dst_width[3];
 } raster_xlate;
 
 typedef struct {
@@ -76,6 +81,7 @@ void raster_put_pixel(const raster_surface *surface, int32_t x, int32_t y, uint3
 uint32_t raster_rop3(uint8_t rop, uint32_t dst, uint32_t src, uint32_t pattern);
 uint32_t raster_rop2(uint8_t code, uint32_t dst, uint32_t pen);
 uint32_t raster_translate(const raster_xlate *xlate, uint32_t src);
+void raster_xlate_prepare(raster_xlate *xlate);
 int raster_clip_contains(const raster_clip *clip, int32_t x, int32_t y);
 
 void raster_line(const raster_surface *dst, const raster_clip *clip,

@@ -235,6 +235,35 @@ static int test_rgb_convert(void) {
     return 0;
 }
 
+static int test_rgb_prepared(void) {
+    struct { uint32_t sr, sg, sb, dr, dg, db; } pairs[] = {
+        {0x7C00, 0x03E0, 0x001F, 0xF800, 0x07E0, 0x001F},
+        {0xF800, 0x07E0, 0x001F, 0x7C00, 0x03E0, 0x001F},
+        {0xFF0000, 0x00FF00, 0x0000FF, 0xF800, 0x07E0, 0x001F},
+        {0xF800, 0x07E0, 0x001F, 0xFF0000, 0x00FF00, 0x0000FF},
+        {0xF800, 0x07E0, 0x001F, 0xF800, 0x07E0, 0x001F},
+    };
+    for (unsigned p = 0; p < sizeof(pairs) / sizeof(pairs[0]); p++) {
+        raster_xlate slow, fast;
+        memset(&slow, 0, sizeof(slow));
+        slow.kind = RASTER_XLATE_RGB;
+        slow.src_red = pairs[p].sr; slow.src_green = pairs[p].sg; slow.src_blue = pairs[p].sb;
+        slow.dst_red = pairs[p].dr; slow.dst_green = pairs[p].dg; slow.dst_blue = pairs[p].db;
+        fast = slow;
+        raster_xlate_prepare(&fast);
+        for (uint32_t src = 0; src <= 0xFFFF; src++) {
+            uint32_t a = raster_translate(&slow, src);
+            uint32_t b = raster_translate(&fast, src);
+            if (a != b) {
+                printf("rgb_prepared: pair %u src 0x%X slow 0x%X fast 0x%X\n", p, src, a, b);
+                return 1;
+            }
+        }
+    }
+    printf("rgb_prepared: OK\n");
+    return 0;
+}
+
 static int test_rgb_to_index(void) {
     uint32_t palette[4] = {0x000000, 0x0000FF, 0x00FF00, 0xFF0000};
     raster_xlate x;
@@ -370,6 +399,7 @@ int main(void) {
     failures += test_aa_text();
     failures += test_rgb_to_index();
     failures += test_rgb_convert();
+    failures += test_rgb_prepared();
     failures += test_rop2();
     failures += test_line_endpoint();
     failures += test_anyblt_stretch();

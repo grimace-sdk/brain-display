@@ -147,6 +147,24 @@ static uint32_t scale_channel(uint32_t value, uint32_t from_mask, uint32_t to_ma
     return (scaled << to_shift) & to_mask;
 }
 
+static uint32_t scale_prepared(uint32_t value, uint32_t from_mask, uint32_t from_shift,
+                               uint32_t from_width, uint32_t to_shift, uint32_t to_width,
+                               uint32_t to_mask) {
+    if (from_width == 0 || to_width == 0) {
+        return 0;
+    }
+    uint32_t channel = (value & from_mask) >> from_shift;
+    uint32_t scaled;
+    if (from_width >= to_width) {
+        scaled = channel >> (from_width - to_width);
+    } else {
+        uint32_t extra = to_width - from_width;
+        uint32_t low = (from_width > extra) ? (channel >> (from_width - extra)) : 0;
+        scaled = (channel << extra) | low;
+    }
+    return (scaled << to_shift) & to_mask;
+}
+
 uint32_t raster_translate(const raster_xlate *xlate, uint32_t src) {
     if (xlate == NULL || xlate->kind == RASTER_XLATE_TRIVIAL) {
         return src;
@@ -178,6 +196,14 @@ uint32_t raster_translate(const raster_xlate *xlate, uint32_t src) {
             }
         }
         return best;
+    }
+    if (xlate->prepared) {
+        return scale_prepared(src, xlate->src_red, xlate->src_shift[0], xlate->src_width[0],
+                              xlate->dst_shift[0], xlate->dst_width[0], xlate->dst_red) |
+               scale_prepared(src, xlate->src_green, xlate->src_shift[1], xlate->src_width[1],
+                              xlate->dst_shift[1], xlate->dst_width[1], xlate->dst_green) |
+               scale_prepared(src, xlate->src_blue, xlate->src_shift[2], xlate->src_width[2],
+                              xlate->dst_shift[2], xlate->dst_width[2], xlate->dst_blue);
     }
     return scale_channel(src, xlate->src_red, xlate->dst_red) |
            scale_channel(src, xlate->src_green, xlate->dst_green) |
@@ -261,6 +287,24 @@ static chan_t chan_make(uint32_t mask) {
         }
     }
     return c;
+}
+
+void raster_xlate_prepare(raster_xlate *xlate) {
+    xlate->prepared = 0;
+    if (xlate->kind != RASTER_XLATE_RGB) {
+        return;
+    }
+    uint32_t src_masks[3] = { xlate->src_red, xlate->src_green, xlate->src_blue };
+    uint32_t dst_masks[3] = { xlate->dst_red, xlate->dst_green, xlate->dst_blue };
+    for (int i = 0; i < 3; i++) {
+        chan_t s = chan_make(src_masks[i]);
+        chan_t d = chan_make(dst_masks[i]);
+        xlate->src_shift[i] = (uint8_t)s.shift;
+        xlate->src_width[i] = (uint8_t)s.width;
+        xlate->dst_shift[i] = (uint8_t)d.shift;
+        xlate->dst_width[i] = (uint8_t)d.width;
+    }
+    xlate->prepared = 1;
 }
 
 static uint32_t chan_to8(uint32_t value, chan_t c) {

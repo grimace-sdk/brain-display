@@ -180,6 +180,7 @@ static void xlate_to_raster(brain_pdev *pdev, XLATEOBJ *pxlo, int32_t src_format
                             uint32_t *table_buffer, raster_xlate *out) {
     out->table = NULL;
     out->table_count = 0;
+    out->prepared = 0;
     if (pxlo == NULL || (pxlo->flXlate & XO_TRIVIAL)) {
         out->kind = RASTER_XLATE_TRIVIAL;
         return;
@@ -221,6 +222,14 @@ static void xlate_to_raster(brain_pdev *pdev, XLATEOBJ *pxlo, int32_t src_format
     out->kind = RASTER_XLATE_RGB;
     source_masks(pdev, pxlo, src_format, &out->src_red, &out->src_green, &out->src_blue);
     dest_masks(pxlo, dst_format, &out->dst_red, &out->dst_green, &out->dst_blue);
+    if (src_format == dst_format &&
+        out->src_red == out->dst_red &&
+        out->src_green == out->dst_green &&
+        out->src_blue == out->dst_blue) {
+        out->kind = RASTER_XLATE_TRIVIAL;
+        return;
+    }
+    raster_xlate_prepare(out);
 }
 
 #define BRAIN_MAX_CLIP_RECTS 64
