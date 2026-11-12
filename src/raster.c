@@ -657,17 +657,33 @@ static void fill_blend_table(uint16_t table[7][64], chan_t c, uint32_t solid8) {
 static int solid_blend_mask_16(const raster_surface *dst, const raster_surface *mask,
                                const raster_rect *rect, int32_t mask_x, int32_t mask_y,
                                uint16_t solid, chan_t cr, chan_t cg, chan_t cb) {
-    uint16_t table_r[7][64];
-    uint16_t table_g[7][64];
-    uint16_t table_b[7][64];
-    fill_blend_table(table_r, cr, chan_to8(solid, cr));
-    fill_blend_table(table_g, cg, chan_to8(solid, cg));
-    fill_blend_table(table_b, cb, chan_to8(solid, cb));
+    static uint16_t table_r[7][64];
+    static uint16_t table_g[7][64];
+    static uint16_t table_b[7][64];
+    static int table_valid = 0;
+    static uint16_t table_solid;
+    static uint32_t table_rmask, table_gmask, table_bmask;
+
+    static uint16_t out_cache[115];
+    static uint32_t out_gen[115];
+    static uint32_t blend_gen = 0;
+    static int32_t cached_dst = -1;
+
+    if (!table_valid || solid != table_solid || cr.mask != table_rmask ||
+        cg.mask != table_gmask || cb.mask != table_bmask) {
+        fill_blend_table(table_r, cr, chan_to8(solid, cr));
+        fill_blend_table(table_g, cg, chan_to8(solid, cg));
+        fill_blend_table(table_b, cb, chan_to8(solid, cb));
+        table_solid = solid;
+        table_rmask = cr.mask;
+        table_gmask = cg.mask;
+        table_bmask = cb.mask;
+        table_valid = 1;
+        blend_gen++;
+        cached_dst = -1;
+    }
 
     int32_t width = rect->right - rect->left;
-    uint32_t last_mval = 0xFFFFFFFF;
-    uint16_t last_d = 0;
-    uint16_t last_out = 0;
     for (int32_t y = rect->top; y < rect->bottom; y++) {
         uint16_t *dest = (uint16_t *)row_address(dst, y) + rect->left;
         const uint8_t *mrow = row_address(mask, mask_y + (y - rect->top)) + mask_x;
@@ -677,18 +693,21 @@ static int solid_blend_mask_16(const raster_surface *dst, const raster_surface *
                 mval = 114;
             }
             uint16_t d = dest[x];
-            if (mval == last_mval && d == last_d) {
-                dest[x] = last_out;
+            if ((int32_t)d != cached_dst) {
+                cached_dst = d;
+                blend_gen++;
+            }
+            if (out_gen[mval] == blend_gen) {
+                dest[x] = out_cache[mval];
                 continue;
             }
             const uint8_t *level = brain_cleartype_levels[mval];
             uint16_t out = table_r[level[0]][(d & cr.mask) >> cr.shift] |
                            table_g[level[1]][(d & cg.mask) >> cg.shift] |
                            table_b[level[2]][(d & cb.mask) >> cb.shift];
+            out_cache[mval] = out;
+            out_gen[mval] = blend_gen;
             dest[x] = out;
-            last_mval = mval;
-            last_d = d;
-            last_out = out;
         }
     }
     return 1;
