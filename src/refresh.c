@@ -9,6 +9,7 @@
 #include "raster.h"
 #include "refresh.h"
 #include "te.h"
+#include "timebase.h"
 #include "log.h"
 
 LPVOID AllocPhysMem(DWORD size, DWORD protect, DWORD alignment, DWORD flags, PULONG physical);
@@ -39,8 +40,6 @@ static int g_angle;
 
 static uint16_t *g_staging[2];
 static uint32_t g_staging_phys[2];
-static uint8_t *g_snapshot;
-static uint32_t g_snapshot_phys;
 static DWORD g_snapshot_enabled = 1;
 
 static CRITICAL_SECTION g_lock;
@@ -49,8 +48,14 @@ static int g_snapshot_lock_ready;
 static int g_dirty_valid;
 static raster_rect g_dirty;
 
-#define BRAIN_SETTLE_MS 0
-static DWORD g_settle_ms = BRAIN_SETTLE_MS;
+#define BRAIN_CADENCE_DEFAULT 1
+#define BRAIN_TE_OFFSET_DEFAULT 2
+static DWORD g_cadence_enabled = BRAIN_CADENCE_DEFAULT;
+static DWORD g_te_offset_ms = BRAIN_TE_OFFSET_DEFAULT;
+static DWORD g_te_offset_us = 0;
+static DWORD g_log_enabled = 0;
+
+#define BRAIN_WHOLE_CACHE_BYTES 16384
 
 static HANDLE g_thread;
 static HANDLE g_wake;
@@ -232,6 +237,14 @@ static int take_dirty(raster_rect *out) {
     return valid;
 }
 
+static int dirty_pending(void) {
+    int valid;
+    EnterCriticalSection(&g_lock);
+    valid = g_dirty_valid;
+    LeaveCriticalSection(&g_lock);
+    return valid;
+}
+
 static int use_pxp(void) {
     return g_use_pxp && g_framebuffer_phys != 0 && brain_pxp_available();
 }
@@ -260,21 +273,18 @@ static void send_wait(void) {
     }
 }
 
-static void snapshot_copy(uint8_t *dst, const uint8_t *src, size_t bytes) {
-    while (bytes >= 32) {
-        __asm__ volatile(
-            "ldmia %1!, {r3-r10}\n\t"
-            "stmia %0!, {r3-r10}\n\t"
-            : "+r"(dst), "+r"(src)
-            :
-            : "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "memory");
-        bytes -= 32;
-    }
-    uint32_t *d = (uint32_t *)dst;
-    const uint32_t *s = (const uint32_t *)src;
-    size_t words = bytes >> 2;
-    for (size_t i = 0; i < words; i++) {
-        d[i] = s[i];
+static uint32_t g_copy_sum, g_copy_max;
+static uint32_t g_lockwait_sum, g_lockwait_max;
+static uint32_t g_pxp_sum, g_pxp_max;
+static uint32_t g_offset_sum, g_offset_max;
+static uint32_t g_send_sum, g_send_max;
+static uint32_t g_stat_count;
+static uint32_t g_prepare_count;
+
+static void stat_add(uint32_t *sum, uint32_t *max, uint32_t v) {
+    *sum += v;
+    if (v > *max) {
+        *max = v;
     }
 }
 
@@ -303,42 +313,40 @@ static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window
         if (dirty.bottom > height) dirty.bottom = height;
 
         brain_compose_window(&brain_current_board, &dirty, angle, window);
-        uint32_t src_phys = g_framebuffer_phys;
+        uint32_t tl0 = brain_us();
+        if (g_snapshot_enabled) {
+            brain_snapshot_lock();
+        }
+        uint32_t tc0 = brain_us();
         if (g_framebuffer != NULL) {
             int full_width = (dirty.left == 0 && dirty.right == width);
             size_t row_offset = (size_t)dirty.left * 2;
-            size_t row_bytes = (size_t)(dirty.right - dirty.left) * 2;
-
-            if (g_snapshot_enabled) {
-                brain_snapshot_lock();
-                if (full_width) {
-                    snapshot_copy(g_snapshot + (size_t)dirty.top * stride,
-                                  (uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
-                                  (size_t)(dirty.bottom - dirty.top) * stride);
-                } else {
-                    for (int32_t fy = dirty.top; fy < dirty.bottom; fy++) {
-                        snapshot_copy(g_snapshot + (size_t)fy * stride + row_offset,
-                                      (uint8_t *)g_framebuffer + (size_t)fy * stride + row_offset,
-                                      row_bytes);
-                    }
-                }
-                brain_snapshot_unlock();
-                (void)*(volatile uint32_t *)(g_snapshot + (size_t)dirty.top * stride);
-                src_phys = g_snapshot_phys;
+            DWORD row_bytes = (DWORD)((dirty.right - dirty.left) * 2);
+            size_t total_bytes = (size_t)(dirty.bottom - dirty.top) *
+                                 (full_width ? (size_t)stride : (size_t)row_bytes);
+            if (total_bytes > BRAIN_WHOLE_CACHE_BYTES) {
+                CacheRangeFlush(NULL, 0, CACHE_SYNC_WRITEBACK);
+            } else if (full_width) {
+                CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
+                                (DWORD)((dirty.bottom - dirty.top) * stride), CACHE_SYNC_WRITEBACK);
             } else {
-                if (full_width) {
-                    CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
-                                    (DWORD)((dirty.bottom - dirty.top) * stride), CACHE_SYNC_WRITEBACK);
-                } else {
-                    for (int32_t fy = dirty.top; fy < dirty.bottom; fy++) {
-                        CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)fy * stride + row_offset,
-                                        (DWORD)row_bytes, CACHE_SYNC_WRITEBACK);
-                    }
+                for (int32_t fy = dirty.top; fy < dirty.bottom; fy++) {
+                    CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)fy * stride + row_offset,
+                                    row_bytes, CACHE_SYNC_WRITEBACK);
                 }
             }
         }
-        brain_pxp_transpose(src_phys, stride / 2, &dirty, g_staging_phys[buf],
+        uint32_t tc1 = brain_us();
+        brain_pxp_transpose(g_framebuffer_phys, stride / 2, &dirty, g_staging_phys[buf],
                             angle, brain_current_board.mirror_columns);
+        uint32_t tp1 = brain_us();
+        if (g_snapshot_enabled) {
+            brain_snapshot_unlock();
+        }
+        stat_add(&g_lockwait_sum, &g_lockwait_max, tc0 - tl0);
+        stat_add(&g_copy_sum, &g_copy_max, tc1 - tc0);
+        stat_add(&g_pxp_sum, &g_pxp_max, tp1 - tc1);
+        g_prepare_count++;
         composite_cursor(window, &dirty, g_staging[buf]);
         return 1;
     }
@@ -357,109 +365,202 @@ static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window
     return 1;
 }
 
-static uint32_t g_te_fast;
-static uint32_t g_te_slow;
-
 static void read_settle_config(void);
 
-static void refresh_te_sync(void) {
-    LARGE_INTEGER qpf, t0, t1;
-    QueryPerformanceFrequency(&qpf);
-    QueryPerformanceCounter(&t0);
-    int ok = brain_te_wait();
-    QueryPerformanceCounter(&t1);
-    if (!ok) {
-        if (++g_te_timeout_streak >= 5) {
-            brain_te_recover();
-            brain_panel_recover(3);
-            brain_refresh_mark_dirty(0, 0, g_width, g_height);
-            g_te_timeout_streak = 0;
-        }
+static void refresh_report(uint32_t *ticks, uint32_t *sends, int n_pending, DWORD *report_at) {
+    DWORD now = GetTickCount();
+    if ((int32_t)(now - *report_at) < 0) {
         return;
     }
-    g_te_timeout_streak = 0;
-    uint32_t us = qpf.QuadPart
-        ? (uint32_t)((t1.QuadPart - t0.QuadPart) * 1000000 / qpf.QuadPart)
-        : 0;
-    if (us < 500) {
-        g_te_fast++;
-    } else {
-        g_te_slow++;
+    if (g_log_enabled && (*ticks != 0 || *sends != 0)) {
+        brain_log_value("refresh: ticks/s", *ticks);
+        brain_log_value("refresh: sends/s", *sends);
+        brain_log_value("refresh: n", (unsigned long)n_pending);
+        brain_log_value("refresh: te period us", brain_te_period_us());
     }
+    if (g_log_enabled && g_prepare_count != 0) {
+        uint32_t pxp_irq, pxp_spin;
+        brain_pxp_path_counts(&pxp_irq, &pxp_spin);
+        brain_log_value("refresh: pxp irq/s", pxp_irq);
+        brain_log_value("refresh: pxp spin/s", pxp_spin);
+        brain_log_value("refresh: lockwait us avg", g_lockwait_sum / g_prepare_count);
+        brain_log_value("refresh: lockwait us max", g_lockwait_max);
+        brain_log_value("refresh: copy us avg", g_copy_sum / g_prepare_count);
+        brain_log_value("refresh: copy us max", g_copy_max);
+        brain_log_value("refresh: pxp us avg", g_pxp_sum / g_prepare_count);
+        brain_log_value("refresh: pxp us max", g_pxp_max);
+    }
+    if (g_log_enabled && g_stat_count != 0) {
+        brain_log_value("refresh: send us avg", g_send_sum / g_stat_count);
+        brain_log_value("refresh: send us max", g_send_max);
+        brain_log_value("refresh: offset us avg", g_offset_sum / g_stat_count);
+        brain_log_value("refresh: offset us max", g_offset_max);
+    }
+    *ticks = 0;
+    *sends = 0;
+    g_lockwait_sum = g_lockwait_max = 0;
+    g_copy_sum = g_copy_max = 0;
+    g_pxp_sum = g_pxp_max = 0;
+    g_send_sum = g_send_max = 0;
+    g_offset_sum = g_offset_max = 0;
+    g_stat_count = 0;
+    g_prepare_count = 0;
+    *report_at = now + 1000;
+    read_settle_config();
+    brain_log_flush();
+}
+
+static int prepare_timed(raster_rect dirty, int buf, brain_panel_window *window,
+                         uint32_t *prepare_us) {
+    uint32_t p0 = brain_us();
+    int ok = prepare_region(dirty, buf, window);
+    *prepare_us = brain_us() - p0;
+    return ok;
 }
 
 static DWORD WINAPI refresh_thread(LPVOID parameter) {
     (void)parameter;
     CeSetThreadPriority(GetCurrentThread(), BRAIN_REFRESH_PRIORITY);
     brain_log("refresh: thread start");
-    uint32_t wakes = 0;
-    uint32_t frames = 0;
+    uint32_t ticks = 0;
+    uint32_t sends = 0;
     DWORD report_at = GetTickCount() + 1000;
 
     int cur = 0;
-    int have_prepared = 0;
+    int prepared = 0;
+    int armed = 0;
+    int n_pending = 1;
+    int n_hyst = 0;
+    uint32_t last_prepare_us = 0;
+    uint32_t last_send_us = 0;
+    uint32_t last_send_edge = 0;
     brain_panel_window windows[2];
 
+    HANDLE te_tick = brain_te_tick_handle();
+
     while (g_running) {
-        if (g_paused) {
-            have_prepared = 0;
+        if (g_paused || (!prepared && !dirty_pending())) {
+            if (armed) {
+                brain_te_disarm();
+                armed = 0;
+            }
+            if (g_paused) {
+                prepared = 0;
+            }
+            refresh_report(&ticks, &sends, n_pending, &report_at);
             WaitForSingleObject(g_wake, 1000);
             continue;
         }
-        if (!have_prepared) {
-            DWORD result = WaitForSingleObject(g_wake, 1000);
-            if (!g_running) {
-                break;
+
+        if (!armed) {
+            brain_te_arm();
+            last_send_edge = brain_te_count() - 2;
+            armed = 1;
+        }
+
+        uint32_t period_us = brain_te_period_us();
+        DWORD tick_timeout = period_us ? (period_us / 1000) * 2 + 4 : 50;
+        DWORD wr = WaitForSingleObject(te_tick, tick_timeout);
+        if (!g_running) {
+            break;
+        }
+        if (g_paused) {
+            continue;
+        }
+        ticks++;
+
+        int force = (wr != WAIT_OBJECT_0);
+        if (force) {
+            if (++g_te_timeout_streak >= 5) {
+                brain_te_recover();
+                brain_panel_recover(3);
+                brain_refresh_mark_dirty(0, 0, g_width, g_height);
+                brain_te_arm();
+                last_send_edge = brain_te_count() - 2;
+                g_te_timeout_streak = 0;
             }
-            if (g_paused) {
+        } else {
+            g_te_timeout_streak = 0;
+        }
+
+        refresh_report(&ticks, &sends, n_pending, &report_at);
+
+        int n = g_cadence_enabled ? n_pending : 1;
+        uint32_t te_now = brain_te_count();
+        uint32_t edges_since = te_now - last_send_edge;
+
+        if (!force) {
+            if (edges_since + 1 < (uint32_t)n) {
                 continue;
             }
-            if (result == WAIT_OBJECT_0) {
-                wakes++;
+            if (n >= 2 && edges_since + 1 == (uint32_t)n) {
+                if (!prepared) {
+                    raster_rect dirty;
+                    if (take_dirty(&dirty)) {
+                        prepared = prepare_timed(dirty, cur, &windows[cur], &last_prepare_us);
+                    }
+                }
+                continue;
             }
-            brain_log_flush();
-            if (g_settle_ms != 0) {
-                WaitForSingleObject(g_wake, g_settle_ms);
+            if (edges_since < (uint32_t)n) {
+                continue;
             }
+        }
+
+        if (!prepared) {
             raster_rect dirty;
-            if (!take_dirty(&dirty) || !prepare_region(dirty, cur, &windows[cur])) {
+            if (!take_dirty(&dirty)) {
                 continue;
             }
-            have_prepared = 1;
-        }
-
-        frames++;
-        send_setup(&windows[cur]);
-        refresh_te_sync();
-        send_kick(&windows[cur], cur);
-
-        int other = cur ^ 1;
-        int next_prepared = 0;
-        raster_rect dirty2;
-        if (take_dirty(&dirty2)) {
-            next_prepared = prepare_region(dirty2, other, &windows[other]);
-        }
-
-        send_wait();
-        cur = other;
-        have_prepared = next_prepared;
-
-        DWORD now = GetTickCount();
-        if ((int32_t)(now - report_at) >= 0) {
-            if (wakes != 0 || frames != 0) {
-                brain_log_value("refresh: wakes/s", wakes);
-                brain_log_value("refresh: frames/s", frames);
-                brain_log_value("refresh: te fast/s", g_te_fast);
-                brain_log_value("refresh: te slow/s", g_te_slow);
+            prepared = prepare_timed(dirty, cur, &windows[cur], &last_prepare_us);
+            if (!prepared) {
+                continue;
             }
-            wakes = 0;
-            frames = 0;
-            g_te_fast = 0;
-            g_te_slow = 0;
-            report_at = now + 1000;
-            read_settle_config();
+        }
+
+        send_setup(&windows[cur]);
+
+        uint32_t edge_count, edge_us;
+        brain_te_last(&edge_count, &edge_us);
+        if (g_te_offset_us != 0) {
+            while (brain_us() - edge_us < g_te_offset_us) {
+            }
+        } else if (g_te_offset_ms != 0) {
+            Sleep(g_te_offset_ms);
+        }
+        stat_add(&g_offset_sum, &g_offset_max, brain_us() - edge_us);
+
+        send_kick(&windows[cur], cur);
+        last_send_edge = brain_te_count();
+
+        uint32_t s0 = brain_us();
+        send_wait();
+        last_send_us = brain_us() - s0;
+        stat_add(&g_send_sum, &g_send_max, last_send_us);
+        g_stat_count++;
+        sends++;
+        prepared = 0;
+        cur ^= 1;
+
+        if (g_cadence_enabled) {
+            uint32_t budget = period_us ? (period_us * 7 / 10) : 11000;
+            uint32_t cycle = last_prepare_us + last_send_us;
+            if (n_pending == 1) {
+                if (cycle > budget) {
+                    n_pending = 2;
+                    n_hyst = 0;
+                }
+            } else if (cycle <= budget) {
+                if (++n_hyst >= 2) {
+                    n_pending = 1;
+                    n_hyst = 0;
+                }
+            } else {
+                n_hyst = 0;
+            }
         }
     }
+    brain_te_disarm();
     brain_log("refresh: thread stop");
     return 0;
 }
@@ -519,10 +620,14 @@ static void read_settle_config(void) {
     HKEY key;
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Brain\\Display", 0, KEY_READ, &key) ==
         ERROR_SUCCESS) {
-        g_settle_ms = read_reg_dword(key, L"SettleMs", BRAIN_SETTLE_MS);
         g_snapshot_enabled = read_reg_dword(key, L"Snapshot", 1);
+        g_cadence_enabled = read_reg_dword(key, L"Cadence", BRAIN_CADENCE_DEFAULT);
+        g_te_offset_ms = read_reg_dword(key, L"TeOffsetMs", BRAIN_TE_OFFSET_DEFAULT);
+        g_te_offset_us = read_reg_dword(key, L"TeOffsetUs", 0);
+        g_log_enabled = read_reg_dword(key, L"Log", 0);
         RegCloseKey(key);
     }
+    brain_log_set_debug((int)g_log_enabled);
 }
 
 int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
@@ -553,21 +658,7 @@ int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
         brain_log_value("refresh: staging phys", phys);
     }
 
-    {
-        ULONG phys = 0;
-        void *base = AllocPhysMem(staging_bytes, PAGE_READWRITE, 0, 0, &phys);
-        void *wc = base ? VirtualAlloc(NULL, staging_bytes, MEM_RESERVE, PAGE_NOACCESS) : NULL;
-        if (base == NULL || wc == NULL ||
-            !VirtualCopy(wc, (LPVOID)(phys >> 8), staging_bytes,
-                         PAGE_READWRITE | PAGE_PHYSICAL | PAGE_WRITECOMBINE)) {
-            brain_log("refresh: snapshot map failed");
-            return 0;
-        }
-        g_snapshot = (uint8_t *)wc;
-        g_snapshot_phys = phys;
-        brain_log_value("refresh: snapshot phys", phys);
-    }
-
+    brain_timebase_init();
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_snapshot_lock);
     g_snapshot_lock_ready = 1;

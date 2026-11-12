@@ -57,10 +57,21 @@ static uint32_t pxp_angle_ctrl(int angle, int mirror) {
 #define STAT_AXI_WRITE_ERROR (1u << 1)
 #define STAT_AXI_READ_ERROR  (1u << 2)
 
+#define PXP_SPIN_PX 16384
+
 static volatile uint32_t *g_pxp;
 static int g_available;
 static uint32_t g_op_count;
 static brain_irq g_irq;
+static uint32_t g_path_irq;
+static uint32_t g_path_spin;
+
+void brain_pxp_path_counts(uint32_t *irq, uint32_t *spin) {
+    *irq = g_path_irq;
+    *spin = g_path_spin;
+    g_path_irq = 0;
+    g_path_spin = 0;
+}
 
 static void reg_write(uint32_t offset, uint32_t value) {
     g_pxp[offset / 4] = value;
@@ -87,6 +98,7 @@ int brain_pxp_init(void) {
     reg_write(PXP_CTRL_CLR, CTRL_SFTRST | CTRL_CLKGATE);
 
     brain_irq_init(&g_irq, PXP_IRQ);
+    brain_log_value("pxp: irq ready", (unsigned long)g_irq.ready);
 
     g_available = 1;
     brain_log("pxp: ready");
@@ -123,15 +135,33 @@ int brain_pxp_transpose(uint32_t src_phys, int32_t src_stride_px,
                     CTRL_OUTBUF_FORMAT_RGB565 | pxp_angle_ctrl(angle, mirror);
 
     int ok = 0;
-    if (g_irq.ready) {
+    int spin = ((int32_t)((int64_t)rect_w * rect_h) <= PXP_SPIN_PX);
+    if (g_irq.ready && !spin) {
+        g_path_irq++;
         reg_write(PXP_STAT_CLR, STAT_IRQ);
         reg_write(PXP_CTRL, ctrl | CTRL_IRQ_ENABLE);
-        WaitForSingleObject(g_irq.event, 50);
-        uint32_t stat = reg_read(PXP_STAT);
-        ok = (stat & STAT_IRQ) || !(reg_read(PXP_CTRL) & CTRL_ENABLE);
+        uint32_t start = GetTickCount();
+        for (;;) {
+            if (WaitForSingleObject(g_irq.event, 2) == WAIT_OBJECT_0) {
+                ok = 1;
+                break;
+            }
+            uint32_t stat = reg_read(PXP_STAT);
+            if ((stat & STAT_IRQ) || !(reg_read(PXP_CTRL) & CTRL_ENABLE)) {
+                ok = 1;
+                break;
+            }
+            if (stat & (STAT_AXI_READ_ERROR | STAT_AXI_WRITE_ERROR)) {
+                break;
+            }
+            if (GetTickCount() - start > 50) {
+                break;
+            }
+        }
         reg_write(PXP_STAT_CLR, STAT_IRQ);
         brain_irq_done(&g_irq);
     } else {
+        g_path_spin++;
         reg_write(PXP_CTRL, ctrl);
         uint32_t start = GetTickCount();
         for (;;) {

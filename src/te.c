@@ -4,12 +4,16 @@
 
 #include "board.h"
 #include "te.h"
+#include "timebase.h"
 #include "log.h"
 
 BOOL WINAPI KernelIoControl(DWORD code, LPVOID in_buffer, DWORD in_size,
                             LPVOID out_buffer, DWORD out_size, LPDWORD returned);
 BOOL InterruptInitialize(DWORD id, HANDLE event, LPVOID data, DWORD data_size);
 void InterruptDone(DWORD id);
+BOOL CeSetThreadPriority(HANDLE thread, int priority);
+
+#define TE_IST_PRIORITY 150
 
 #define CTL_CODE(device, function, method, access) \
     (((device) << 16) | ((access) << 14) | ((function) << 2) | (method))
@@ -35,6 +39,15 @@ static uint32_t g_pin_mask;
 static uint32_t g_bank_offset;
 static uint32_t g_timeout;
 static int g_available;
+
+static HANDLE g_te_tick;
+static HANDLE g_ist_thread;
+static volatile LONG g_ist_running;
+static volatile LONG g_te_armed;
+static CRITICAL_SECTION g_te_data_lock;
+static volatile uint32_t g_te_count;
+static uint32_t g_te_time_us;
+static volatile uint32_t g_te_period_us;
 
 static void reg_write(uint32_t byte_offset, uint32_t value) {
     g_pinctrl[byte_offset / 4] = value;
@@ -63,6 +76,91 @@ static void setup_pin(void) {
     }
     reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
     reg_write(bank_reg(PINCTRL_IRQEN) + 8, g_pin_mask);
+    InterlockedExchange(&g_te_armed, 0);
+}
+
+void brain_te_arm(void) {
+    if (!g_available) {
+        return;
+    }
+    EnterCriticalSection(&g_te_data_lock);
+    g_te_time_us = 0;
+    LeaveCriticalSection(&g_te_data_lock);
+    reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
+    reg_write(bank_reg(PINCTRL_IRQEN) + 4, g_pin_mask);
+    InterlockedExchange(&g_te_armed, 1);
+}
+
+void brain_te_disarm(void) {
+    if (!g_available) {
+        return;
+    }
+    reg_write(bank_reg(PINCTRL_IRQEN) + 8, g_pin_mask);
+    InterlockedExchange(&g_te_armed, 0);
+}
+
+HANDLE brain_te_tick_handle(void) {
+    return g_te_tick;
+}
+
+uint32_t brain_te_count(void) {
+    return g_te_count;
+}
+
+void brain_te_last(uint32_t *count, uint32_t *time_us) {
+    EnterCriticalSection(&g_te_data_lock);
+    *count = g_te_count;
+    *time_us = g_te_time_us;
+    LeaveCriticalSection(&g_te_data_lock);
+}
+
+uint32_t brain_te_period_us(void) {
+    return g_te_period_us;
+}
+
+static DWORD WINAPI te_ist_thread(LPVOID parameter) {
+    (void)parameter;
+    CeSetThreadPriority(GetCurrentThread(), TE_IST_PRIORITY);
+    while (g_ist_running) {
+        DWORD result = WaitForSingleObject(g_event, 1000);
+        if (!g_ist_running) {
+            break;
+        }
+        if (result != WAIT_OBJECT_0) {
+            continue;
+        }
+        reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
+        uint32_t now = brain_us();
+        uint32_t period = g_te_period_us;
+        int have_prev = (g_te_time_us != 0);
+        uint32_t delta_us = have_prev ? (now - g_te_time_us) : 0;
+
+        if (have_prev && period != 0 && delta_us < period / 2) {
+            InterruptDone(g_sysintr);
+            continue;
+        }
+
+        uint32_t advanced = 1;
+        EnterCriticalSection(&g_te_data_lock);
+        if (have_prev && period != 0) {
+            advanced = (delta_us + period / 2) / period;
+            if (advanced < 1) {
+                advanced = 1;
+            }
+            if (advanced > 8) {
+                advanced = 1;
+            }
+            if (advanced == 1 && delta_us >= period * 4 / 5 && delta_us <= period * 6 / 5) {
+                g_te_period_us = (period * 7 + delta_us) / 8;
+            }
+        }
+        g_te_time_us = now;
+        g_te_count += advanced;
+        LeaveCriticalSection(&g_te_data_lock);
+        InterruptDone(g_sysintr);
+        SetEvent(g_te_tick);
+    }
+    return 0;
 }
 
 int brain_te_init(void) {
@@ -83,6 +181,7 @@ int brain_te_init(void) {
     g_pin_mask = 1u << board->te_pin;
     g_bank_offset = (uint32_t)board->te_bank * 0x10;
     g_timeout = (uint32_t)board->te_timeout_ms;
+    g_te_period_us = (uint32_t)board->te_period_us;
 
     setup_pin();
 
@@ -108,6 +207,20 @@ int brain_te_init(void) {
         return 0;
     }
 
+    InitializeCriticalSection(&g_te_data_lock);
+    g_te_tick = CreateEventW(NULL, FALSE, FALSE, NULL);
+    if (g_te_tick == NULL) {
+        brain_log("te: tick event failed");
+        return 0;
+    }
+    g_ist_running = 1;
+    g_ist_thread = CreateThread(NULL, 0, te_ist_thread, NULL, 0, NULL);
+    if (g_ist_thread == NULL) {
+        brain_log("te: IST thread failed");
+        g_ist_running = 0;
+        return 0;
+    }
+
     g_available = 1;
     brain_log("te: ready");
     return 1;
@@ -121,29 +234,11 @@ int brain_te_wait(void) {
     if (!g_available) {
         return 1;
     }
-    LARGE_INTEGER qpf;
-    QueryPerformanceFrequency(&qpf);
-    for (int attempt = 0; attempt < 8; attempt++) {
-        reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
-        reg_write(bank_reg(PINCTRL_IRQEN) + 4, g_pin_mask);
-        LARGE_INTEGER t0, t1;
-        QueryPerformanceCounter(&t0);
-        DWORD result = WaitForSingleObject(g_event, g_timeout);
-        QueryPerformanceCounter(&t1);
-        reg_write(bank_reg(PINCTRL_IRQEN) + 8, g_pin_mask);
-        reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
-        InterruptDone(g_sysintr);
-        if (result != WAIT_OBJECT_0) {
-            return 0;
-        }
-        uint32_t us = qpf.QuadPart
-            ? (uint32_t)((t1.QuadPart - t0.QuadPart) * 1000000 / qpf.QuadPart)
-            : 2000;
-        if (us >= 1000) {
-            return 1;
-        }
+    if (!g_te_armed) {
+        brain_te_arm();
     }
-    return 1;
+    DWORD result = WaitForSingleObject(g_te_tick, g_timeout);
+    return result == WAIT_OBJECT_0 ? 1 : 0;
 }
 
 void brain_te_recover(void) {

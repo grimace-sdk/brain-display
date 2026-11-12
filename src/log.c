@@ -9,6 +9,7 @@ static char brain_log_buffer[16384];
 static DWORD brain_log_length;
 static int brain_log_file_ready;
 static volatile LONG brain_log_suspended;
+static volatile LONG brain_log_debug_enabled;
 
 static DWORD ascii_length(const char *text) {
     DWORD length = 0;
@@ -83,32 +84,14 @@ static void open_file_ready(void) {
     }
 }
 
-static void append_line(const char *line, DWORD length) {
-    HANDLE file = CreateFileW(brain_log_path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                              OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (file == INVALID_HANDLE_VALUE) {
-        return;
-    }
-    SetFilePointer(file, 0, NULL, FILE_END);
-    write_handle(file, line, length);
-    write_handle(file, "\r\n", 2);
-    FlushFileBuffers(file);
-    CloseHandle(file);
-}
-
 static void emit(const char *line) {
-    emit_debug(line);
-    if (brain_log_suspended) {
-        buffer_line(line);
-        return;
+    if (brain_log_debug_enabled) {
+        emit_debug(line);
     }
-    if (!brain_log_file_ready) {
-        buffer_line(line);
+    buffer_line(line);
+    if (!brain_log_file_ready && !brain_log_suspended) {
         open_file_ready();
-        return;
     }
-    append_buffered();
-    append_line(line, ascii_length(line));
 }
 
 void brain_log(const char *message) {
@@ -116,11 +99,17 @@ void brain_log(const char *message) {
 }
 
 void brain_log_debug(const char *message) {
-    emit_debug(message);
+    if (brain_log_debug_enabled) {
+        emit_debug(message);
+    }
 }
 
 void brain_log_set_suspended(int suspended) {
     InterlockedExchange(&brain_log_suspended, suspended ? 1 : 0);
+}
+
+void brain_log_set_debug(int enabled) {
+    InterlockedExchange(&brain_log_debug_enabled, enabled ? 1 : 0);
 }
 
 void brain_log_flush(void) {
