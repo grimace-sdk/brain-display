@@ -121,13 +121,29 @@ int brain_te_wait(void) {
     if (!g_available) {
         return 1;
     }
-    reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
-    reg_write(bank_reg(PINCTRL_IRQEN) + 4, g_pin_mask);
-    DWORD result = WaitForSingleObject(g_event, g_timeout);
-    reg_write(bank_reg(PINCTRL_IRQEN) + 8, g_pin_mask);
-    reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
-    InterruptDone(g_sysintr);
-    return result == WAIT_OBJECT_0;
+    LARGE_INTEGER qpf;
+    QueryPerformanceFrequency(&qpf);
+    for (int attempt = 0; attempt < 8; attempt++) {
+        reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
+        reg_write(bank_reg(PINCTRL_IRQEN) + 4, g_pin_mask);
+        LARGE_INTEGER t0, t1;
+        QueryPerformanceCounter(&t0);
+        DWORD result = WaitForSingleObject(g_event, g_timeout);
+        QueryPerformanceCounter(&t1);
+        reg_write(bank_reg(PINCTRL_IRQEN) + 8, g_pin_mask);
+        reg_write(bank_reg(PINCTRL_IRQSTAT) + 8, g_pin_mask);
+        InterruptDone(g_sysintr);
+        if (result != WAIT_OBJECT_0) {
+            return 0;
+        }
+        uint32_t us = qpf.QuadPart
+            ? (uint32_t)((t1.QuadPart - t0.QuadPart) * 1000000 / qpf.QuadPart)
+            : 2000;
+        if (us >= 1000) {
+            return 1;
+        }
+    }
+    return 1;
 }
 
 void brain_te_recover(void) {

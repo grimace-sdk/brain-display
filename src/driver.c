@@ -331,10 +331,12 @@ static BOOL APIENTRY brain_BitBlt(SURFOBJ *psoTrg, SURFOBJ *psoSrc, SURFOBJ *pso
     uint32_t dst_masks[3];
     dest_masks(pxlo, target.format, &dst_masks[0], &dst_masks[1], &dst_masks[2]);
 
+    brain_snapshot_lock();
     raster_bitblt(&target, source_ptr, mask_ptr, &clip.clip, &xlate, &rect,
                   pptlSrc ? pptlSrc->x : 0, pptlSrc ? pptlSrc->y : 0,
                   pptlMask ? pptlMask->x : 0, pptlMask ? pptlMask->y : 0,
                   &brush, (uint16_t)rop4, dst_masks);
+    brain_snapshot_unlock();
 
     if (surface_is_primary(pdev, psoTrg)) {
         raster_rect dirty = rect;
@@ -703,6 +705,7 @@ static BOOL APIENTRY brain_StrokePath(SURFOBJ *pso, PATHOBJ *ppo, CLIPOBJ *pco, 
     int drew = 0;
 
     pdev->eng.PATHOBJ_vEnumStart(ppo);
+    brain_snapshot_lock();
     for (;;) {
         BOOL more = pdev->eng.PATHOBJ_bEnum(ppo, &data);
         for (ULONG index = 0; index < data.count; index++) {
@@ -741,6 +744,7 @@ static BOOL APIENTRY brain_StrokePath(SURFOBJ *pso, PATHOBJ *ppo, CLIPOBJ *pco, 
             break;
         }
     }
+    brain_snapshot_unlock();
 
     if (drew && surface_is_primary(pdev, pso)) {
         brain_refresh_mark_dirty(min_x, min_y, max_x + 1, max_y + 1);
@@ -814,7 +818,9 @@ static BOOL APIENTRY brain_FillPath(SURFOBJ *pso, PATHOBJ *ppo, CLIPOBJ *pco, BR
     }
 
     if (subpath_count > 0) {
+        brain_snapshot_lock();
         raster_fill_polygon(&target, &clip.clip, points, subpath_lengths, subpath_count, &brush, rop2, winding);
+        brain_snapshot_unlock();
         if (surface_is_primary(pdev, pso)) {
             brain_refresh_mark_dirty(min_x, min_y, max_x + 1, max_y + 1);
         }
@@ -861,8 +867,10 @@ static BOOL APIENTRY brain_AnyBlt(SURFOBJ *psoDest, SURFOBJ *psoSrc, SURFOBJ *ps
     src_rect.right = prclSrc->right;
     src_rect.bottom = prclSrc->bottom;
 
+    brain_snapshot_lock();
     raster_anyblt(&target, source_ptr, mask_ptr, &clip.clip, &xlate, &dst_rect, &src_rect,
                   pptlMask ? pptlMask->x : 0, pptlMask ? pptlMask->y : 0, &brush, (uint16_t)rop4);
+    brain_snapshot_unlock();
 
     if (surface_is_primary(pdev, psoDest)) {
         raster_rect dirty = dst_rect;
@@ -899,7 +907,9 @@ static BOOL APIENTRY brain_TransparentBlt(SURFOBJ *psoDest, SURFOBJ *psoSrc, CLI
     src_rect.right = prclSrc->right;
     src_rect.bottom = prclSrc->bottom;
 
+    brain_snapshot_lock();
     raster_transparentblt(&target, &source, &clip.clip, &xlate, &dst_rect, &src_rect, TransColor);
+    brain_snapshot_unlock();
 
     if (surface_is_primary(pdev, psoDest)) {
         raster_rect dirty = dst_rect;
@@ -924,6 +934,7 @@ static BOOL APIENTRY brain_GradientFill(SURFOBJ *pso, CLIPOBJ *pco, XLATEOBJ *px
     clip_to_raster(pdev, pco, &clip);
 
     GRADIENT_RECT *rects = (GRADIENT_RECT *)pMesh;
+    brain_snapshot_lock();
     for (ULONG index = 0; index < nMesh; index++) {
         TRIVERTEX *a = &pVertex[rects[index].UpperLeft];
         TRIVERTEX *b = &pVertex[rects[index].LowerRight];
@@ -955,6 +966,7 @@ static BOOL APIENTRY brain_GradientFill(SURFOBJ *pso, CLIPOBJ *pco, XLATEOBJ *px
             }
         }
     }
+    brain_snapshot_unlock();
 
     if (surface_is_primary(pdev, pso) && prclExtents != NULL) {
         brain_refresh_mark_dirty(prclExtents->left, prclExtents->top, prclExtents->right, prclExtents->bottom);

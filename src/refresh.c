@@ -34,12 +34,19 @@ static int32_t g_height;
 static int32_t g_stride;
 static int g_angle;
 
-static uint16_t *g_staging;
-static uint32_t g_staging_phys;
+static uint16_t *g_staging[2];
+static uint32_t g_staging_phys[2];
 
 static CRITICAL_SECTION g_lock;
+static CRITICAL_SECTION g_snapshot_lock;
+static int g_snapshot_lock_ready;
 static int g_dirty_valid;
 static raster_rect g_dirty;
+static volatile DWORD g_last_mark_tick;
+static volatile DWORD g_dirty_first_tick;
+
+#define BRAIN_SETTLE_MS 2
+#define BRAIN_MAX_HOLD_MS 33
 
 static HANDLE g_thread;
 static HANDLE g_wake;
@@ -131,7 +138,8 @@ void brain_cursor_hide(void) {
     brain_cursor_move(-1, -1);
 }
 
-static void composite_cursor(const brain_panel_window *window, const raster_rect *dirty) {
+static void composite_cursor(const brain_panel_window *window, const raster_rect *dirty,
+                             uint16_t *staging) {
     EnterCriticalSection(&g_cursor_lock);
     if (g_cursor_visible) {
         for (int32_t cy = 0; cy < g_cursor_h; cy++) {
@@ -153,7 +161,7 @@ static void composite_cursor(const brain_panel_window *window, const raster_rect
                 }
                 int and_bit = mask_bit(cx, cy);
                 int xor_bit = mask_bit(cx, cy + g_cursor_h);
-                uint16_t *pixel = &g_staging[(size_t)pi * window->col_count + ci];
+                uint16_t *pixel = &staging[(size_t)pi * window->col_count + ci];
                 uint16_t value = *pixel;
                 if (!and_bit) {
                     value = 0;
@@ -168,6 +176,18 @@ static void composite_cursor(const brain_panel_window *window, const raster_rect
     LeaveCriticalSection(&g_cursor_lock);
 }
 
+void brain_snapshot_lock(void) {
+    if (g_snapshot_lock_ready) {
+        EnterCriticalSection(&g_snapshot_lock);
+    }
+}
+
+void brain_snapshot_unlock(void) {
+    if (g_snapshot_lock_ready) {
+        LeaveCriticalSection(&g_snapshot_lock);
+    }
+}
+
 void brain_refresh_mark_dirty(int32_t left, int32_t top, int32_t right, int32_t bottom) {
     if (left < 0) left = 0;
     if (top < 0) top = 0;
@@ -176,6 +196,7 @@ void brain_refresh_mark_dirty(int32_t left, int32_t top, int32_t right, int32_t 
     if (left >= right || top >= bottom) {
         return;
     }
+    DWORD now = GetTickCount();
     EnterCriticalSection(&g_lock);
     int transition = !g_dirty_valid;
     if (!g_dirty_valid) {
@@ -184,12 +205,14 @@ void brain_refresh_mark_dirty(int32_t left, int32_t top, int32_t right, int32_t 
         g_dirty.right = right;
         g_dirty.bottom = bottom;
         g_dirty_valid = 1;
+        g_dirty_first_tick = now;
     } else {
         if (left < g_dirty.left) g_dirty.left = left;
         if (top < g_dirty.top) g_dirty.top = top;
         if (right > g_dirty.right) g_dirty.right = right;
         if (bottom > g_dirty.bottom) g_dirty.bottom = bottom;
     }
+    g_last_mark_tick = now;
     LeaveCriticalSection(&g_lock);
     if (transition && g_wake != NULL) {
         SetEvent(g_wake);
@@ -208,14 +231,27 @@ static int take_dirty(raster_rect *out) {
     return valid;
 }
 
+static int dirty_settled(void) {
+    DWORD now = GetTickCount();
+    return (now - g_last_mark_tick) >= BRAIN_SETTLE_MS ||
+           (now - g_dirty_first_tick) >= BRAIN_MAX_HOLD_MS;
+}
+
 static int use_pxp(void) {
     return g_use_pxp && g_framebuffer_phys != 0 && brain_pxp_available();
 }
 
-static void transfer_window(const brain_panel_window *window) {
+static void send_setup(const brain_panel_window *window) {
     brain_panel_set_window(window->col_start, window->col_count,
                            window->page_start, window->page_count);
-    if (!brain_panel_transfer(g_staging_phys, window->col_count, window->page_count)) {
+}
+
+static void send_kick(const brain_panel_window *window, int buf) {
+    brain_panel_transfer_start(g_staging_phys[buf], window->col_count, window->page_count);
+}
+
+static void send_wait(void) {
+    if (!brain_panel_transfer_wait()) {
         g_xfer_fail_streak++;
         brain_log("refresh: transfer timeout");
         brain_log_value("refresh: CTRL", brain_panel_reg_ctrl());
@@ -229,7 +265,7 @@ static void transfer_window(const brain_panel_window *window) {
     }
 }
 
-static void push_region(raster_rect dirty) {
+static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window) {
     EnterCriticalSection(&g_lock);
     int32_t width = g_width;
     int32_t height = g_height;
@@ -242,10 +278,8 @@ static void push_region(raster_rect dirty) {
     if (dirty.right > width) dirty.right = width;
     if (dirty.bottom > height) dirty.bottom = height;
     if (dirty.left >= dirty.right || dirty.top >= dirty.bottom) {
-        return;
+        return 0;
     }
-
-    brain_panel_window window;
 
     if (use_pxp()) {
         dirty.left &= ~7;
@@ -255,7 +289,8 @@ static void push_region(raster_rect dirty) {
         if (dirty.right > width) dirty.right = width;
         if (dirty.bottom > height) dirty.bottom = height;
 
-        brain_compose_window(&brain_current_board, &dirty, angle, &window);
+        brain_compose_window(&brain_current_board, &dirty, angle, window);
+        brain_snapshot_lock();
         if (g_framebuffer != NULL) {
             if (dirty.left == 0 && dirty.right == width) {
                 CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
@@ -269,11 +304,11 @@ static void push_region(raster_rect dirty) {
                 }
             }
         }
-        brain_pxp_transpose(g_framebuffer_phys, stride / 2, &dirty, g_staging_phys,
+        brain_pxp_transpose(g_framebuffer_phys, stride / 2, &dirty, g_staging_phys[buf],
                             angle, brain_current_board.mirror_columns);
-        composite_cursor(&window, &dirty);
-        transfer_window(&window);
-        return;
+        brain_snapshot_unlock();
+        composite_cursor(window, &dirty, g_staging[buf]);
+        return 1;
     }
 
     raster_surface primary;
@@ -283,9 +318,40 @@ static void push_region(raster_rect dirty) {
     primary.stride = stride;
     primary.format = RASTER_FORMAT_16BPP;
 
-    brain_compose(&brain_current_board, &primary, &dirty, angle, g_staging, &window);
-    composite_cursor(&window, &dirty);
-    transfer_window(&window);
+    brain_snapshot_lock();
+    brain_compose(&brain_current_board, &primary, &dirty, angle, g_staging[buf], window);
+    brain_snapshot_unlock();
+    composite_cursor(window, &dirty, g_staging[buf]);
+    return 1;
+}
+
+static uint32_t g_te_fast;
+static uint32_t g_te_slow;
+
+static void refresh_te_sync(void) {
+    LARGE_INTEGER qpf, t0, t1;
+    QueryPerformanceFrequency(&qpf);
+    QueryPerformanceCounter(&t0);
+    int ok = brain_te_wait();
+    QueryPerformanceCounter(&t1);
+    if (!ok) {
+        if (++g_te_timeout_streak >= 5) {
+            brain_te_recover();
+            brain_panel_recover(3);
+            brain_refresh_mark_dirty(0, 0, g_width, g_height);
+            g_te_timeout_streak = 0;
+        }
+        return;
+    }
+    g_te_timeout_streak = 0;
+    uint32_t us = qpf.QuadPart
+        ? (uint32_t)((t1.QuadPart - t0.QuadPart) * 1000000 / qpf.QuadPart)
+        : 0;
+    if (us < 500) {
+        g_te_fast++;
+    } else {
+        g_te_slow++;
+    }
 }
 
 static DWORD WINAPI refresh_thread(LPVOID parameter) {
@@ -295,38 +361,67 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
     uint32_t wakes = 0;
     uint32_t frames = 0;
     DWORD report_at = GetTickCount() + 1000;
+
+    int cur = 0;
+    int have_prepared = 0;
+    brain_panel_window windows[2];
+
     while (g_running) {
-        DWORD result = WaitForSingleObject(g_wake, 1000);
-        if (!g_running) {
-            break;
+        if (g_paused) {
+            have_prepared = 0;
+            WaitForSingleObject(g_wake, 1000);
+            continue;
         }
-        if (!g_paused) {
+        if (!have_prepared) {
+            DWORD result = WaitForSingleObject(g_wake, 1000);
+            if (!g_running) {
+                break;
+            }
+            if (g_paused) {
+                continue;
+            }
             if (result == WAIT_OBJECT_0) {
                 wakes++;
             }
             brain_log_flush();
-            raster_rect dirty;
-            if (take_dirty(&dirty)) {
-                frames++;
-                if (brain_te_wait()) {
-                    g_te_timeout_streak = 0;
-                } else if (++g_te_timeout_streak >= 5) {
-                    brain_te_recover();
-                    brain_panel_recover(3);
-                    brain_refresh_mark_dirty(0, 0, g_width, g_height);
-                    g_te_timeout_streak = 0;
-                }
-                push_region(dirty);
+            while (g_running && !g_paused && g_dirty_valid && !dirty_settled()) {
+                Sleep(1);
             }
+            raster_rect dirty;
+            if (!take_dirty(&dirty) || !prepare_region(dirty, cur, &windows[cur])) {
+                continue;
+            }
+            have_prepared = 1;
         }
+
+        frames++;
+        send_setup(&windows[cur]);
+        refresh_te_sync();
+        send_kick(&windows[cur], cur);
+
+        int other = cur ^ 1;
+        int next_prepared = 0;
+        raster_rect dirty2;
+        if (dirty_settled() && take_dirty(&dirty2)) {
+            next_prepared = prepare_region(dirty2, other, &windows[other]);
+        }
+
+        send_wait();
+        cur = other;
+        have_prepared = next_prepared;
+
         DWORD now = GetTickCount();
         if ((int32_t)(now - report_at) >= 0) {
             if (wakes != 0 || frames != 0) {
                 brain_log_value("refresh: wakes/s", wakes);
                 brain_log_value("refresh: frames/s", frames);
+                brain_log_value("refresh: te fast/s", g_te_fast);
+                brain_log_value("refresh: te slow/s", g_te_slow);
             }
             wakes = 0;
             frames = 0;
+            g_te_fast = 0;
+            g_te_slow = 0;
             report_at = now + 1000;
         }
     }
@@ -341,7 +436,12 @@ void brain_refresh_suspend(void) {
 
 void brain_refresh_push_full(void) {
     raster_rect full = {0, 0, g_width, g_height};
-    push_region(full);
+    brain_panel_window window;
+    if (prepare_region(full, 0, &window)) {
+        send_setup(&window);
+        send_kick(&window, 0);
+        send_wait();
+    }
 }
 
 void brain_refresh_resume(void) {
@@ -378,23 +478,27 @@ int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
     g_stride = stride;
 
     DWORD staging_bytes = (DWORD)brain_current_board.panel_width * brain_current_board.panel_height * 2;
-    ULONG phys = 0;
-    void *cached = AllocPhysMem(staging_bytes, PAGE_READWRITE, 0, 0, &phys);
-    if (cached == NULL) {
-        brain_log("refresh: AllocPhysMem failed");
-        return 0;
+    for (int i = 0; i < 2; i++) {
+        ULONG phys = 0;
+        void *cached = AllocPhysMem(staging_bytes, PAGE_READWRITE, 0, 0, &phys);
+        if (cached == NULL) {
+            brain_log("refresh: AllocPhysMem failed");
+            return 0;
+        }
+        void *uncached = VirtualAlloc(NULL, staging_bytes, MEM_RESERVE, PAGE_NOACCESS);
+        if (uncached == NULL || !VirtualCopy(uncached, (LPVOID)(phys >> 8), staging_bytes,
+                                             PAGE_READWRITE | PAGE_PHYSICAL | PAGE_NOCACHE)) {
+            brain_log("refresh: staging map failed");
+            return 0;
+        }
+        g_staging[i] = (uint16_t *)uncached;
+        g_staging_phys[i] = phys;
+        brain_log_value("refresh: staging phys", phys);
     }
-    void *uncached = VirtualAlloc(NULL, staging_bytes, MEM_RESERVE, PAGE_NOACCESS);
-    if (uncached == NULL || !VirtualCopy(uncached, (LPVOID)(phys >> 8), staging_bytes,
-                                         PAGE_READWRITE | PAGE_PHYSICAL | PAGE_NOCACHE)) {
-        brain_log("refresh: staging map failed");
-        return 0;
-    }
-    g_staging = (uint16_t *)uncached;
-    g_staging_phys = phys;
-    brain_log_value("refresh: staging phys", phys);
 
     InitializeCriticalSection(&g_lock);
+    InitializeCriticalSection(&g_snapshot_lock);
+    g_snapshot_lock_ready = 1;
     InitializeCriticalSection(&g_cursor_lock);
     g_dirty.left = 0;
     g_dirty.top = 0;

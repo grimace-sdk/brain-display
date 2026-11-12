@@ -193,7 +193,7 @@ static int lcdif_poll_done(uint32_t timeout_ms) {
     return 1;
 }
 
-int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
+void brain_panel_transfer_start(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
     reg_write(REG_CTRL_CLR, CTRL_RUN);
     reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ);
     reg_write(REG_CTRL1_CLR, 0xFu << CTRL1_BYTE_PACKING_SHIFT);
@@ -202,30 +202,37 @@ int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
     reg_write(REG_NEXT_BUF, phys);
     reg_write(REG_TRANSFER_COUNT, ((uint32_t)rows << 16) | (uint32_t)pixels_per_row);
     reg_write(REG_CTRL_SET, CTRL_DATA_SELECT | CTRL_LCDIF_MASTER);
-
-    int ok = 0;
     if (g_lcdif_irq.ready) {
         reg_write(REG_CTRL1_SET, CTRL1_CUR_FRAME_DONE_IRQ_EN);
-        reg_write(REG_CTRL_SET, CTRL_RUN);
+    }
+    reg_write(REG_CTRL_SET, CTRL_RUN);
+}
+
+int brain_panel_transfer_wait(void) {
+    int ok;
+    if (g_lcdif_irq.ready) {
         WaitForSingleObject(g_lcdif_irq.event, 150);
         ok = lcdif_transfer_done();
         reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ);
         reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ_EN);
         brain_irq_done(&g_lcdif_irq);
     } else {
-        reg_write(REG_CTRL_SET, CTRL_RUN);
         ok = lcdif_poll_done(150);
     }
     reg_write(REG_CTRL_CLR, CTRL_RUN);
     reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ);
 
     if (!ok) {
-        brain_log_value("xfer TIMEOUT size", ((uint32_t)rows << 16) | (uint32_t)pixels_per_row);
         brain_log_value("xfer TIMEOUT CTRL", reg_read(REG_CTRL));
         brain_log_value("xfer TIMEOUT CTRL1", reg_read(REG_CTRL1));
         brain_log_value("xfer TIMEOUT STAT", reg_read(REG_STAT));
     }
     return ok;
+}
+
+int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
+    brain_panel_transfer_start(phys, pixels_per_row, rows);
+    return brain_panel_transfer_wait();
 }
 
 uint32_t brain_panel_reg_ctrl(void) {
