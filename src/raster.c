@@ -447,6 +447,31 @@ static int fill_solid_16(const raster_surface *dst, const raster_rect *rect, uin
     return 1;
 }
 
+static void copy_row_16(uint16_t *dest, const uint16_t *source, int32_t count) {
+    if (count <= 0) {
+        return;
+    }
+    if ((((uintptr_t)dest ^ (uintptr_t)source) & 2u) == 0) {
+        if (((uintptr_t)dest & 2u) != 0) {
+            *dest++ = *source++;
+            count--;
+        }
+        uint32_t *d32 = (uint32_t *)dest;
+        const uint32_t *s32 = (const uint32_t *)source;
+        int32_t words = count >> 1;
+        for (int32_t i = 0; i < words; i++) {
+            d32[i] = s32[i];
+        }
+        if (count & 1) {
+            dest[words << 1] = source[words << 1];
+        }
+    } else {
+        for (int32_t i = 0; i < count; i++) {
+            dest[i] = source[i];
+        }
+    }
+}
+
 static int copy_16(const raster_surface *dst, const raster_surface *src,
                    const raster_rect *rect, int32_t src_x, int32_t src_y) {
     int32_t count = rect->right - rect->left;
@@ -461,9 +486,7 @@ static int copy_16(const raster_surface *dst, const raster_surface *src,
                 dest[i] = source[i];
             }
         } else {
-            for (int32_t i = 0; i < count; i++) {
-                dest[i] = source[i];
-            }
+            copy_row_16(dest, source, count);
         }
     }
     return 1;
@@ -482,6 +505,60 @@ static int copy_indexed_16(const raster_surface *dst, const raster_surface *src,
         for (int32_t x = 0; x < width; x++) {
             uint32_t idx = get_pixel_row(srow, sfmt, src_x + x);
             dest[x] = (uint16_t)(idx < count ? table[idx] : 0);
+        }
+    }
+    return 1;
+}
+
+static int masked_copy_16(const raster_surface *dst, const raster_surface *src,
+                          const raster_surface *mask, const raster_rect *rect,
+                          int32_t src_x, int32_t src_y, int32_t mask_x, int32_t mask_y) {
+    int32_t width = rect->right - rect->left;
+    for (int32_t row = 0; row < rect->bottom - rect->top; row++) {
+        uint16_t *dest = (uint16_t *)row_address(dst, rect->top + row) + rect->left;
+        const uint16_t *source = (const uint16_t *)row_address(src, src_y + row) + src_x;
+        const uint8_t *mrow = row_address(mask, mask_y + row);
+        int32_t x = 0;
+        while (x < width) {
+            int32_t bit = mask_x + x;
+            if ((bit & 7) == 0 && (width - x) >= 8) {
+                uint8_t mb = mrow[bit >> 3];
+                if (mb == 0xFF) {
+                    for (int32_t k = 0; k < 8; k++) {
+                        dest[x + k] = source[x + k];
+                    }
+                } else if (mb != 0x00) {
+                    for (int32_t k = 0; k < 8; k++) {
+                        if ((mb >> (7 - k)) & 1) {
+                            dest[x + k] = source[x + k];
+                        }
+                    }
+                }
+                x += 8;
+            } else {
+                if ((mrow[bit >> 3] >> (7 - (bit & 7))) & 1) {
+                    dest[x] = source[x];
+                }
+                x++;
+            }
+        }
+    }
+    return 1;
+}
+
+static int and_indexed_16(const raster_surface *dst, const raster_surface *src,
+                          const raster_rect *rect, int32_t src_x, int32_t src_y,
+                          const raster_xlate *xlate) {
+    int32_t width = rect->right - rect->left;
+    int32_t sfmt = src->format;
+    const uint32_t *table = xlate->table;
+    uint32_t count = xlate->table_count;
+    for (int32_t row = 0; row < rect->bottom - rect->top; row++) {
+        uint16_t *dest = (uint16_t *)row_address(dst, rect->top + row) + rect->left;
+        const uint8_t *srow = row_address(src, src_y + row);
+        for (int32_t x = 0; x < width; x++) {
+            uint32_t idx = get_pixel_row(srow, sfmt, src_x + x);
+            dest[x] &= (uint16_t)(idx < count ? table[idx] : 0);
         }
     }
     return 1;
@@ -578,6 +655,30 @@ void raster_bitblt(const raster_surface *dst,
     rect.right = clamped_right;
     rect.bottom = clamped_bottom;
 
+    raster_clip clip_none;
+    if (clip != NULL && clip->kind == RASTER_CLIP_RECT) {
+        int32_t nl = rect.left > clip->bounds.left ? rect.left : clip->bounds.left;
+        int32_t nt = rect.top > clip->bounds.top ? rect.top : clip->bounds.top;
+        int32_t nr = rect.right < clip->bounds.right ? rect.right : clip->bounds.right;
+        int32_t nb = rect.bottom < clip->bounds.bottom ? rect.bottom : clip->bounds.bottom;
+        if (nl >= nr || nt >= nb) {
+            return;
+        }
+        src_x += nl - rect.left;
+        src_y += nt - rect.top;
+        mask_x += nl - rect.left;
+        mask_y += nt - rect.top;
+        rect.left = nl;
+        rect.top = nt;
+        rect.right = nr;
+        rect.bottom = nb;
+        clip_none.kind = RASTER_CLIP_NONE;
+        clip_none.rects = NULL;
+        clip_none.rect_count = 0;
+        clip_none.non_overlapping = 0;
+        clip = &clip_none;
+    }
+
     if (clip != NULL && clip->kind == RASTER_CLIP_COMPLEX && clip->non_overlapping &&
         clip->rects != NULL && (src == NULL || src->bits != dst->bits)) {
         raster_clip none;
@@ -620,6 +721,18 @@ void raster_bitblt(const raster_surface *dst,
         if (src != NULL && mask == NULL && rop4 == 0xCCCC && src->bits != dst->bits &&
             xlate != NULL && xlate->kind == RASTER_XLATE_TABLE && xlate->table != NULL) {
             copy_indexed_16(dst, src, &rect, src_x, src_y, xlate);
+            return;
+        }
+        if (src != NULL && mask == NULL && rop4 == 0x8888 && src->bits != dst->bits &&
+            xlate != NULL && xlate->kind == RASTER_XLATE_TABLE && xlate->table != NULL) {
+            and_indexed_16(dst, src, &rect, src_x, src_y, xlate);
+            return;
+        }
+        if (src != NULL && mask != NULL && rop4 == 0xAACC &&
+            src->format == RASTER_FORMAT_16BPP && mask->format == RASTER_FORMAT_1BPP &&
+            src->bits != dst->bits &&
+            (xlate == NULL || xlate->kind == RASTER_XLATE_TRIVIAL)) {
+            masked_copy_16(dst, src, mask, &rect, src_x, src_y, mask_x, mask_y);
             return;
         }
         if (src == NULL && mask != NULL && mask->format == RASTER_FORMAT_1BPP && solid_brush) {
@@ -672,12 +785,18 @@ void raster_fill_polygon(const raster_surface *dst, const raster_clip *clip,
     if (max_y > dst->height) max_y = dst->height;
 
     int clip_needed = !(clip == NULL || clip->kind == RASTER_CLIP_NONE);
+    int clip_rect = (clip != NULL && clip->kind == RASTER_CLIP_RECT);
     int32_t dst_format = dst->format;
     int solid_span = (rop2 == 13) && brush != NULL && !brush->is_pattern &&
-                     !clip_needed && dst_format == RASTER_FORMAT_16BPP;
+                     dst_format == RASTER_FORMAT_16BPP &&
+                     (!clip_needed || clip_rect);
     uint16_t solid_value = brush != NULL ? (uint16_t)brush->solid : 0;
 
     for (int32_t y = min_y; y < max_y; y++) {
+        if (solid_span && clip_rect &&
+            (y < clip->bounds.top || y >= clip->bounds.bottom)) {
+            continue;
+        }
         uint8_t *dst_row = row_address(dst, y);
         int32_t cross_x[RASTER_MAX_CROSSINGS];
         int32_t cross_dir[RASTER_MAX_CROSSINGS];
@@ -737,6 +856,10 @@ void raster_fill_polygon(const raster_surface *dst, const raster_clip *clip,
             if (xa < 0) xa = 0;
             if (xb > dst->width) xb = dst->width;
             if (solid_span) {
+                if (clip_rect) {
+                    if (xa < clip->bounds.left) xa = clip->bounds.left;
+                    if (xb > clip->bounds.right) xb = clip->bounds.right;
+                }
                 uint16_t *row16 = (uint16_t *)dst_row;
                 for (int32_t x = xa; x < xb; x++) {
                     row16[x] = solid_value;

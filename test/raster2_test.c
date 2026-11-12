@@ -327,8 +327,45 @@ static int test_complex_clip(void) {
     return 0;
 }
 
+static int test_fill_polygon_clip(void) {
+    uint16_t a[24 * 16], b[24 * 16];
+    for (int i = 0; i < 24 * 16; i++) {
+        a[i] = b[i] = 0x0842;
+    }
+    raster_surface da = {a, 24, 16, 48, RASTER_FORMAT_16BPP};
+    raster_surface db = {b, 24, 16, 48, RASTER_FORMAT_16BPP};
+    raster_point pts[4] = {{2, 2}, {20, 3}, {18, 14}, {3, 13}};
+    int32_t lens[1] = {4};
+    raster_brush brush;
+    memset(&brush, 0, sizeof(brush));
+    brush.solid = 0xF800;
+    raster_rect r = {5, 4, 16, 12};
+
+    raster_clip crect;
+    memset(&crect, 0, sizeof(crect));
+    crect.kind = RASTER_CLIP_RECT;
+    crect.bounds = r;
+    raster_fill_polygon(&da, &crect, pts, lens, 1, &brush, 13, 0);
+
+    raster_clip ccomplex;
+    memset(&ccomplex, 0, sizeof(ccomplex));
+    ccomplex.kind = RASTER_CLIP_COMPLEX;
+    ccomplex.bounds = r;
+    ccomplex.rects = &r;
+    ccomplex.rect_count = 1;
+    raster_fill_polygon(&db, &ccomplex, pts, lens, 1, &brush, 13, 0);
+
+    if (memcmp(a, b, sizeof(a)) != 0) {
+        printf("fill_polygon_clip: RECT fast path != per-pixel path\n");
+        return 1;
+    }
+    printf("fill_polygon_clip: OK\n");
+    return 0;
+}
+
 int main(void) {
     int failures = 0;
+    failures += test_fill_polygon_clip();
     failures += test_complex_clip();
     failures += test_aa_text();
     failures += test_rgb_to_index();

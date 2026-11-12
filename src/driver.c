@@ -292,6 +292,16 @@ static BOOL APIENTRY brain_BitBlt(SURFOBJ *psoTrg, SURFOBJ *psoSrc, SURFOBJ *pso
                                   RECTL *prclTrg, POINTL *pptlSrc, POINTL *pptlMask, BRUSHOBJ *pbo, POINTL *pptlBrush,
                                   ROP4 rop4) {
     brain_pdev *pdev = (brain_pdev *)psoTrg->dhpdev;
+    static uint32_t g_img_log;
+    if (psoSrc != NULL && g_img_log < 20 && prclTrg != NULL &&
+        (prclTrg->right - prclTrg->left) == 32 && (prclTrg->bottom - prclTrg->top) == 32) {
+        brain_log_value("img rop4", rop4);
+        brain_log_value("img srcfmt", (unsigned long)psoSrc->iBitmapFormat);
+        brain_log_value("img maskfmt", psoMask ? (unsigned long)psoMask->iBitmapFormat : 0xFFFFFFFF);
+        brain_log_value("img xlate", pxlo ? (unsigned long)pxlo->flXlate : 0);
+        brain_log_value("img clip", pco ? (unsigned long)pco->iDComplexity : 0);
+        g_img_log++;
+    }
     raster_surface target, source, mask;
     raster_surface *source_ptr = NULL;
     raster_surface *mask_ptr = NULL;

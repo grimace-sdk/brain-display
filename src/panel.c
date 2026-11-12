@@ -3,7 +3,10 @@
 
 #include "board.h"
 #include "panel.h"
+#include "irq.h"
 #include "log.h"
+
+#define LCDIF_IRQ 38
 
 #define LCDIF_PHYS_BASE   0x80030000u
 #define LCDIF_MAP_SIZE    0x2000u
@@ -35,6 +38,7 @@
 #define CTRL_SFTRST       (1u << 31)
 #define CTRL1_BYTE_PACKING_SHIFT 16
 #define CTRL1_CUR_FRAME_DONE_IRQ (1u << 9)
+#define CTRL1_CUR_FRAME_DONE_IRQ_EN (1u << 13)
 #define CTRL1_UNDERFLOW_IRQ (1u << 10)
 #define CTRL1_FIFO_CLEAR  (1u << 21)
 
@@ -136,6 +140,7 @@ void brain_panel_set_window(int32_t col_start, int32_t col_count, int32_t page_s
 }
 
 static uint32_t g_transfer_count;
+static brain_irq g_lcdif_irq;
 
 int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
     reg_write(REG_CTRL_CLR, CTRL_RUN);
@@ -146,27 +151,39 @@ int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
     reg_write(REG_NEXT_BUF, phys);
     reg_write(REG_TRANSFER_COUNT, ((uint32_t)rows << 16) | (uint32_t)pixels_per_row);
     reg_write(REG_CTRL_SET, CTRL_DATA_SELECT | CTRL_LCDIF_MASTER);
-    reg_write(REG_CTRL_SET, CTRL_RUN);
 
-    uint32_t start = GetTickCount();
+    uint32_t t0 = GetTickCount();
     int ok = 0;
-    for (;;) {
-        if (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ) {
+    if (g_lcdif_irq.ready) {
+        reg_write(REG_CTRL1_SET, CTRL1_CUR_FRAME_DONE_IRQ_EN);
+        reg_write(REG_CTRL_SET, CTRL_RUN);
+        WaitForSingleObject(g_lcdif_irq.event, 150);
+        ok = (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ) ||
+             !(reg_read(REG_CTRL) & CTRL_RUN);
+        reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ);
+        reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ_EN);
+        brain_irq_done(&g_lcdif_irq);
+    } else {
+        reg_write(REG_CTRL_SET, CTRL_RUN);
+        uint32_t start = GetTickCount();
+        for (;;) {
+            if (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ) {
+                ok = 1;
+                break;
+            }
+            if (!(reg_read(REG_CTRL) & CTRL_RUN)) {
+                ok = 1;
+                break;
+            }
+            if (GetTickCount() - start > 150) {
+                ok = 0;
+                break;
+            }
+        }
+        if (!ok && (!(reg_read(REG_CTRL) & CTRL_RUN) ||
+                    (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ))) {
             ok = 1;
-            break;
         }
-        if (!(reg_read(REG_CTRL) & CTRL_RUN)) {
-            ok = 1;
-            break;
-        }
-        if (GetTickCount() - start > 150) {
-            ok = 0;
-            break;
-        }
-    }
-    if (!ok && (!(reg_read(REG_CTRL) & CTRL_RUN) ||
-                (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ))) {
-        ok = 1;
     }
     reg_write(REG_CTRL_CLR, CTRL_RUN);
     reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ);
@@ -178,7 +195,7 @@ int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
         brain_log_value("xfer TIMEOUT STAT", reg_read(REG_STAT));
     } else if (g_transfer_count < 40) {
         brain_log_value("xfer size", ((uint32_t)rows << 16) | (uint32_t)pixels_per_row);
-        brain_log_value("xfer ok", (unsigned long)ok);
+        brain_log_value("xfer ms", (unsigned long)(GetTickCount() - t0));
         g_transfer_count++;
     }
     return ok;
@@ -275,6 +292,7 @@ int brain_panel_init(void) {
     g_saved_timing = reg_read(REG_TIMING);
 
     panel_configure();
+    brain_irq_init(&g_lcdif_irq, LCDIF_IRQ);
     brain_log("panel: init done");
     return 1;
 }

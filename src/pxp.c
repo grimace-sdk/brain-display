@@ -3,7 +3,10 @@
 #include <stdint.h>
 
 #include "pxp.h"
+#include "irq.h"
 #include "log.h"
+
+#define PXP_IRQ 39
 
 #define PXP_PHYS_BASE 0x8002A000u
 #define PXP_MAP_SIZE  0x2000u
@@ -25,9 +28,30 @@
 #define CTRL_CROP         (1u << 19)
 #define CTRL_VFLIP        (1u << 11)
 #define CTRL_ENABLE       (1u << 0)
+#define CTRL_IRQ_ENABLE   (1u << 1)
+#define CTRL_HFLIP        (1u << 10)
 #define CTRL_S0_FORMAT_RGB565  (0x4u << 12)
 #define CTRL_OUTBUF_FORMAT_RGB565 (0x4u << 4)
+#define CTRL_ROTATE_0     (0x0u << 8)
 #define CTRL_ROTATE_90    (0x1u << 8)
+#define CTRL_ROTATE_180   (0x2u << 8)
+#define CTRL_ROTATE_270   (0x3u << 8)
+
+/* PXP rotate/flip per (angle, mirror) to reproduce the CPU compose mapping.
+   Angle 0 is device-confirmed (SH2 ROTATE_90; A7300 ROTATE_90+VFLIP).
+   90/180/270 are derived from panel_to_frame and tuned on device. */
+static uint32_t pxp_angle_ctrl(int angle, int mirror) {
+    switch (angle) {
+    case 1:
+        return CTRL_ROTATE_0 | (mirror ? 0u : CTRL_HFLIP);
+    case 2:
+        return CTRL_ROTATE_270 | (mirror ? 0u : (CTRL_VFLIP | CTRL_HFLIP));
+    case 3:
+        return CTRL_ROTATE_180;
+    default:
+        return CTRL_ROTATE_90 | (mirror ? 0u : CTRL_VFLIP);
+    }
+}
 
 #define STAT_IRQ          (1u << 0)
 #define STAT_AXI_WRITE_ERROR (1u << 1)
@@ -36,6 +60,7 @@
 static volatile uint32_t *g_pxp;
 static int g_available;
 static uint32_t g_op_count;
+static brain_irq g_irq;
 
 static void reg_write(uint32_t offset, uint32_t value) {
     g_pxp[offset / 4] = value;
@@ -61,6 +86,8 @@ int brain_pxp_init(void) {
     reg_write(PXP_CTRL_SET, CTRL_SFTRST);
     reg_write(PXP_CTRL_CLR, CTRL_SFTRST | CTRL_CLKGATE);
 
+    brain_irq_init(&g_irq, PXP_IRQ);
+
     g_available = 1;
     brain_log("pxp: ready");
     return 1;
@@ -71,7 +98,7 @@ int brain_pxp_available(void) {
 }
 
 int brain_pxp_transpose(uint32_t src_phys, int32_t src_stride_px,
-                        const raster_rect *rect, uint32_t dst_phys, int mirror) {
+                        const raster_rect *rect, uint32_t dst_phys, int angle, int mirror) {
     if (!g_available) {
         return 0;
     }
@@ -93,32 +120,39 @@ int brain_pxp_transpose(uint32_t src_phys, int32_t src_stride_px,
               (0xFFu << 24) | ((uint32_t)rect_w << 12) | (uint32_t)rect_h);
 
     uint32_t ctrl = CTRL_ENABLE | CTRL_CROP | CTRL_S0_FORMAT_RGB565 |
-                    CTRL_OUTBUF_FORMAT_RGB565 | CTRL_ROTATE_90;
-    if (!mirror) {
-        ctrl |= CTRL_VFLIP;
-    }
-    reg_write(PXP_CTRL, ctrl);
+                    CTRL_OUTBUF_FORMAT_RGB565 | pxp_angle_ctrl(angle, mirror);
 
-    uint32_t start = GetTickCount();
     int ok = 0;
-    for (;;) {
+    if (g_irq.ready) {
+        reg_write(PXP_STAT_CLR, STAT_IRQ);
+        reg_write(PXP_CTRL, ctrl | CTRL_IRQ_ENABLE);
+        WaitForSingleObject(g_irq.event, 50);
         uint32_t stat = reg_read(PXP_STAT);
-        if (stat & STAT_IRQ) {
-            ok = 1;
-            break;
+        ok = (stat & STAT_IRQ) || !(reg_read(PXP_CTRL) & CTRL_ENABLE);
+        reg_write(PXP_STAT_CLR, STAT_IRQ);
+        brain_irq_done(&g_irq);
+    } else {
+        reg_write(PXP_CTRL, ctrl);
+        uint32_t start = GetTickCount();
+        for (;;) {
+            uint32_t stat = reg_read(PXP_STAT);
+            if (stat & STAT_IRQ) {
+                ok = 1;
+                break;
+            }
+            if (stat & (STAT_AXI_READ_ERROR | STAT_AXI_WRITE_ERROR)) {
+                break;
+            }
+            if (!(reg_read(PXP_CTRL) & CTRL_ENABLE)) {
+                ok = 1;
+                break;
+            }
+            if (GetTickCount() - start > 50) {
+                break;
+            }
         }
-        if (stat & (STAT_AXI_READ_ERROR | STAT_AXI_WRITE_ERROR)) {
-            break;
-        }
-        if (!(reg_read(PXP_CTRL) & CTRL_ENABLE)) {
-            ok = 1;
-            break;
-        }
-        if (GetTickCount() - start > 50) {
-            break;
-        }
+        reg_write(PXP_STAT_CLR, STAT_IRQ);
     }
-    reg_write(PXP_STAT_CLR, STAT_IRQ);
 
     if (!ok) {
         brain_log_value("pxp TIMEOUT STAT", reg_read(PXP_STAT));

@@ -13,7 +13,13 @@
 
 LPVOID AllocPhysMem(DWORD size, DWORD protect, DWORD alignment, DWORD flags, PULONG physical);
 void CacheRangeFlush(LPVOID address, DWORD length, DWORD flags);
+BOOL CeSetThreadPriority(HANDLE thread, int priority);
 #define CACHE_SYNC_WRITEBACK 0x004
+
+/* Refresh thread priority. Default CreateThread threads run at 251; a lower
+   number is higher priority, so this puts the (IRQ-blocked) refresh thread
+   just above the draw thread so its wakeups preempt it promptly. */
+#define BRAIN_REFRESH_PRIORITY 248
 
 #ifdef BRAIN_NO_PXP
 static const int g_use_pxp = 0;
@@ -171,6 +177,7 @@ void brain_refresh_mark_dirty(int32_t left, int32_t top, int32_t right, int32_t 
         return;
     }
     EnterCriticalSection(&g_lock);
+    int transition = !g_dirty_valid;
     if (!g_dirty_valid) {
         g_dirty.left = left;
         g_dirty.top = top;
@@ -184,7 +191,7 @@ void brain_refresh_mark_dirty(int32_t left, int32_t top, int32_t right, int32_t 
         if (bottom > g_dirty.bottom) g_dirty.bottom = bottom;
     }
     LeaveCriticalSection(&g_lock);
-    if (g_wake != NULL) {
+    if (transition && g_wake != NULL) {
         SetEvent(g_wake);
     }
 }
@@ -240,7 +247,7 @@ static void push_region(raster_rect dirty) {
 
     brain_panel_window window;
 
-    if (use_pxp() && angle == 0) {
+    if (use_pxp()) {
         dirty.left &= ~7;
         dirty.top &= ~7;
         dirty.right = (dirty.right + 7) & ~7;
@@ -248,13 +255,22 @@ static void push_region(raster_rect dirty) {
         if (dirty.right > width) dirty.right = width;
         if (dirty.bottom > height) dirty.bottom = height;
 
-        brain_compose_window(&brain_current_board, &dirty, 0, &window);
+        brain_compose_window(&brain_current_board, &dirty, angle, &window);
         if (g_framebuffer != NULL) {
-            CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
-                            (DWORD)((dirty.bottom - dirty.top) * stride), CACHE_SYNC_WRITEBACK);
+            if (dirty.left == 0 && dirty.right == width) {
+                CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
+                                (DWORD)((dirty.bottom - dirty.top) * stride), CACHE_SYNC_WRITEBACK);
+            } else {
+                size_t row_offset = (size_t)dirty.left * 2;
+                DWORD row_bytes = (DWORD)((dirty.right - dirty.left) * 2);
+                for (int32_t fy = dirty.top; fy < dirty.bottom; fy++) {
+                    CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)fy * stride + row_offset,
+                                    row_bytes, CACHE_SYNC_WRITEBACK);
+                }
+            }
         }
         brain_pxp_transpose(g_framebuffer_phys, stride / 2, &dirty, g_staging_phys,
-                            brain_current_board.mirror_columns);
+                            angle, brain_current_board.mirror_columns);
         composite_cursor(&window, &dirty);
         transfer_window(&window);
         return;
@@ -274,6 +290,7 @@ static void push_region(raster_rect dirty) {
 
 static DWORD WINAPI refresh_thread(LPVOID parameter) {
     (void)parameter;
+    CeSetThreadPriority(GetCurrentThread(), BRAIN_REFRESH_PRIORITY);
     brain_log("refresh: thread start");
     uint32_t wakes = 0;
     uint32_t frames = 0;
