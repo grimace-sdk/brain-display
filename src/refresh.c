@@ -15,6 +15,9 @@ LPVOID AllocPhysMem(DWORD size, DWORD protect, DWORD alignment, DWORD flags, PUL
 void CacheRangeFlush(LPVOID address, DWORD length, DWORD flags);
 BOOL CeSetThreadPriority(HANDLE thread, int priority);
 #define CACHE_SYNC_WRITEBACK 0x004
+#ifndef PAGE_WRITECOMBINE
+#define PAGE_WRITECOMBINE 0x400
+#endif
 
 /* Refresh thread priority. Default CreateThread threads run at 251; a lower
    number is higher priority, so this puts the (IRQ-blocked) refresh thread
@@ -36,17 +39,18 @@ static int g_angle;
 
 static uint16_t *g_staging[2];
 static uint32_t g_staging_phys[2];
+static uint8_t *g_snapshot;
+static uint32_t g_snapshot_phys;
+static DWORD g_snapshot_enabled = 1;
 
 static CRITICAL_SECTION g_lock;
 static CRITICAL_SECTION g_snapshot_lock;
 static int g_snapshot_lock_ready;
 static int g_dirty_valid;
 static raster_rect g_dirty;
-static volatile DWORD g_last_mark_tick;
-static volatile DWORD g_dirty_first_tick;
 
-#define BRAIN_SETTLE_MS 2
-#define BRAIN_MAX_HOLD_MS 33
+#define BRAIN_SETTLE_MS 0
+static DWORD g_settle_ms = BRAIN_SETTLE_MS;
 
 static HANDLE g_thread;
 static HANDLE g_wake;
@@ -196,7 +200,6 @@ void brain_refresh_mark_dirty(int32_t left, int32_t top, int32_t right, int32_t 
     if (left >= right || top >= bottom) {
         return;
     }
-    DWORD now = GetTickCount();
     EnterCriticalSection(&g_lock);
     int transition = !g_dirty_valid;
     if (!g_dirty_valid) {
@@ -205,14 +208,12 @@ void brain_refresh_mark_dirty(int32_t left, int32_t top, int32_t right, int32_t 
         g_dirty.right = right;
         g_dirty.bottom = bottom;
         g_dirty_valid = 1;
-        g_dirty_first_tick = now;
     } else {
         if (left < g_dirty.left) g_dirty.left = left;
         if (top < g_dirty.top) g_dirty.top = top;
         if (right > g_dirty.right) g_dirty.right = right;
         if (bottom > g_dirty.bottom) g_dirty.bottom = bottom;
     }
-    g_last_mark_tick = now;
     LeaveCriticalSection(&g_lock);
     if (transition && g_wake != NULL) {
         SetEvent(g_wake);
@@ -229,12 +230,6 @@ static int take_dirty(raster_rect *out) {
     }
     LeaveCriticalSection(&g_lock);
     return valid;
-}
-
-static int dirty_settled(void) {
-    DWORD now = GetTickCount();
-    return (now - g_last_mark_tick) >= BRAIN_SETTLE_MS ||
-           (now - g_dirty_first_tick) >= BRAIN_MAX_HOLD_MS;
 }
 
 static int use_pxp(void) {
@@ -265,6 +260,24 @@ static void send_wait(void) {
     }
 }
 
+static void snapshot_copy(uint8_t *dst, const uint8_t *src, size_t bytes) {
+    while (bytes >= 32) {
+        __asm__ volatile(
+            "ldmia %1!, {r3-r10}\n\t"
+            "stmia %0!, {r3-r10}\n\t"
+            : "+r"(dst), "+r"(src)
+            :
+            : "r3", "r4", "r5", "r6", "r7", "r8", "r9", "r10", "memory");
+        bytes -= 32;
+    }
+    uint32_t *d = (uint32_t *)dst;
+    const uint32_t *s = (const uint32_t *)src;
+    size_t words = bytes >> 2;
+    for (size_t i = 0; i < words; i++) {
+        d[i] = s[i];
+    }
+}
+
 static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window) {
     EnterCriticalSection(&g_lock);
     int32_t width = g_width;
@@ -290,23 +303,42 @@ static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window
         if (dirty.bottom > height) dirty.bottom = height;
 
         brain_compose_window(&brain_current_board, &dirty, angle, window);
-        brain_snapshot_lock();
+        uint32_t src_phys = g_framebuffer_phys;
         if (g_framebuffer != NULL) {
-            if (dirty.left == 0 && dirty.right == width) {
-                CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
-                                (DWORD)((dirty.bottom - dirty.top) * stride), CACHE_SYNC_WRITEBACK);
+            int full_width = (dirty.left == 0 && dirty.right == width);
+            size_t row_offset = (size_t)dirty.left * 2;
+            size_t row_bytes = (size_t)(dirty.right - dirty.left) * 2;
+
+            if (g_snapshot_enabled) {
+                brain_snapshot_lock();
+                if (full_width) {
+                    snapshot_copy(g_snapshot + (size_t)dirty.top * stride,
+                                  (uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
+                                  (size_t)(dirty.bottom - dirty.top) * stride);
+                } else {
+                    for (int32_t fy = dirty.top; fy < dirty.bottom; fy++) {
+                        snapshot_copy(g_snapshot + (size_t)fy * stride + row_offset,
+                                      (uint8_t *)g_framebuffer + (size_t)fy * stride + row_offset,
+                                      row_bytes);
+                    }
+                }
+                brain_snapshot_unlock();
+                (void)*(volatile uint32_t *)(g_snapshot + (size_t)dirty.top * stride);
+                src_phys = g_snapshot_phys;
             } else {
-                size_t row_offset = (size_t)dirty.left * 2;
-                DWORD row_bytes = (DWORD)((dirty.right - dirty.left) * 2);
-                for (int32_t fy = dirty.top; fy < dirty.bottom; fy++) {
-                    CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)fy * stride + row_offset,
-                                    row_bytes, CACHE_SYNC_WRITEBACK);
+                if (full_width) {
+                    CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)dirty.top * stride,
+                                    (DWORD)((dirty.bottom - dirty.top) * stride), CACHE_SYNC_WRITEBACK);
+                } else {
+                    for (int32_t fy = dirty.top; fy < dirty.bottom; fy++) {
+                        CacheRangeFlush((uint8_t *)g_framebuffer + (size_t)fy * stride + row_offset,
+                                        (DWORD)row_bytes, CACHE_SYNC_WRITEBACK);
+                    }
                 }
             }
         }
-        brain_pxp_transpose(g_framebuffer_phys, stride / 2, &dirty, g_staging_phys[buf],
+        brain_pxp_transpose(src_phys, stride / 2, &dirty, g_staging_phys[buf],
                             angle, brain_current_board.mirror_columns);
-        brain_snapshot_unlock();
         composite_cursor(window, &dirty, g_staging[buf]);
         return 1;
     }
@@ -327,6 +359,8 @@ static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window
 
 static uint32_t g_te_fast;
 static uint32_t g_te_slow;
+
+static void read_settle_config(void);
 
 static void refresh_te_sync(void) {
     LARGE_INTEGER qpf, t0, t1;
@@ -384,8 +418,8 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
                 wakes++;
             }
             brain_log_flush();
-            while (g_running && !g_paused && g_dirty_valid && !dirty_settled()) {
-                Sleep(1);
+            if (g_settle_ms != 0) {
+                WaitForSingleObject(g_wake, g_settle_ms);
             }
             raster_rect dirty;
             if (!take_dirty(&dirty) || !prepare_region(dirty, cur, &windows[cur])) {
@@ -402,7 +436,7 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
         int other = cur ^ 1;
         int next_prepared = 0;
         raster_rect dirty2;
-        if (dirty_settled() && take_dirty(&dirty2)) {
+        if (take_dirty(&dirty2)) {
             next_prepared = prepare_region(dirty2, other, &windows[other]);
         }
 
@@ -423,6 +457,7 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
             g_te_fast = 0;
             g_te_slow = 0;
             report_at = now + 1000;
+            read_settle_config();
         }
     }
     brain_log("refresh: thread stop");
@@ -469,8 +504,30 @@ void brain_refresh_set_rotation(int angle, int32_t width, int32_t height, int32_
     brain_log_value("refresh: rotation angle", (unsigned long)angle);
 }
 
+static DWORD read_reg_dword(HKEY key, const WCHAR *name, DWORD fallback) {
+    DWORD value = fallback;
+    DWORD size = sizeof(value);
+    DWORD type = 0;
+    if (RegQueryValueExW(key, name, NULL, &type, (LPBYTE)&value, &size) == ERROR_SUCCESS &&
+        type == REG_DWORD) {
+        return value;
+    }
+    return fallback;
+}
+
+static void read_settle_config(void) {
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Brain\\Display", 0, KEY_READ, &key) ==
+        ERROR_SUCCESS) {
+        g_settle_ms = read_reg_dword(key, L"SettleMs", BRAIN_SETTLE_MS);
+        g_snapshot_enabled = read_reg_dword(key, L"Snapshot", 1);
+        RegCloseKey(key);
+    }
+}
+
 int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
                         int32_t width, int32_t height, int32_t stride) {
+    read_settle_config();
     g_framebuffer = framebuffer;
     g_framebuffer_phys = framebuffer_phys;
     g_width = width;
@@ -494,6 +551,21 @@ int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
         g_staging[i] = (uint16_t *)uncached;
         g_staging_phys[i] = phys;
         brain_log_value("refresh: staging phys", phys);
+    }
+
+    {
+        ULONG phys = 0;
+        void *base = AllocPhysMem(staging_bytes, PAGE_READWRITE, 0, 0, &phys);
+        void *wc = base ? VirtualAlloc(NULL, staging_bytes, MEM_RESERVE, PAGE_NOACCESS) : NULL;
+        if (base == NULL || wc == NULL ||
+            !VirtualCopy(wc, (LPVOID)(phys >> 8), staging_bytes,
+                         PAGE_READWRITE | PAGE_PHYSICAL | PAGE_WRITECOMBINE)) {
+            brain_log("refresh: snapshot map failed");
+            return 0;
+        }
+        g_snapshot = (uint8_t *)wc;
+        g_snapshot_phys = phys;
+        brain_log_value("refresh: snapshot phys", phys);
     }
 
     InitializeCriticalSection(&g_lock);

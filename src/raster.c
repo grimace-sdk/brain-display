@@ -448,6 +448,9 @@ static void bitblt_generic(const raster_surface *dst,
             if (mask != NULL && blend_ok &&
                 (mask_format == RASTER_FORMAT_4BPP || mask_format == RASTER_FORMAT_8BPP)) {
                 uint32_t mval = get_pixel_row(mask_row, mask_format, mask_x + offset_x);
+                if (mval == 0) {
+                    continue;
+                }
                 uint32_t fg = raster_rop3(rop_foreground, dest_value, source_value, pattern_value);
                 uint32_t bg = raster_rop3(rop_background, dest_value, source_value, pattern_value);
                 uint32_t blended = (mask_format == RASTER_FORMAT_8BPP)
@@ -554,6 +557,20 @@ static int or_16(const raster_surface *dst, const raster_surface *src,
         const uint16_t *source = (const uint16_t *)row_address(src, src_y + row) + src_x;
         for (int32_t i = 0; i < count; i++) {
             dest[i] |= source[i];
+        }
+    }
+    return 1;
+}
+
+static int rgb_copy_16(const raster_surface *dst, const raster_surface *src,
+                       const raster_rect *rect, int32_t src_x, int32_t src_y,
+                       const raster_xlate *xlate) {
+    int32_t count = rect->right - rect->left;
+    for (int32_t row = 0; row < rect->bottom - rect->top; row++) {
+        uint16_t *dest = (uint16_t *)row_address(dst, rect->top + row) + rect->left;
+        const uint16_t *source = (const uint16_t *)row_address(src, src_y + row) + src_x;
+        for (int32_t i = 0; i < count; i++) {
+            dest[i] = (uint16_t)raster_translate(xlate, source[i]);
         }
     }
     return 1;
@@ -697,8 +714,18 @@ static int solid_blend_mask_16(const raster_surface *dst, const raster_surface *
     for (int32_t y = rect->top; y < rect->bottom; y++) {
         uint16_t *dest = (uint16_t *)row_address(dst, y) + rect->left;
         const uint8_t *mrow = row_address(mask, mask_y + (y - rect->top)) + mask_x;
-        for (int32_t x = 0; x < width; x++) {
-            uint32_t mval = mrow[x];
+        int32_t x = 0;
+        while (x < width) {
+            const uint8_t *mp = mrow + x;
+            if (((uintptr_t)mp & 3) == 0 && x + 4 <= width && *(const uint32_t *)mp == 0) {
+                x += 4;
+                continue;
+            }
+            uint32_t mval = *mp;
+            if (mval == 0) {
+                x++;
+                continue;
+            }
             if (mval > 114) {
                 mval = 114;
             }
@@ -709,6 +736,7 @@ static int solid_blend_mask_16(const raster_surface *dst, const raster_surface *
             }
             if (out_gen[mval] == blend_gen) {
                 dest[x] = out_cache[mval];
+                x++;
                 continue;
             }
             const uint8_t *level = brain_cleartype_levels[mval];
@@ -718,6 +746,7 @@ static int solid_blend_mask_16(const raster_surface *dst, const raster_surface *
             out_cache[mval] = out;
             out_gen[mval] = blend_gen;
             dest[x] = out;
+            x++;
         }
     }
     return 1;
@@ -818,6 +847,12 @@ void raster_bitblt(const raster_surface *dst,
         if (src != NULL && mask == NULL && src->format == RASTER_FORMAT_16BPP &&
             rop4 == 0xEEEE && (xlate == NULL || xlate->kind == RASTER_XLATE_TRIVIAL)) {
             or_16(dst, src, &rect, src_x, src_y);
+            return;
+        }
+        if (src != NULL && mask == NULL && src->format == RASTER_FORMAT_16BPP &&
+            rop4 == 0xCCCC && xlate != NULL && xlate->kind == RASTER_XLATE_RGB &&
+            xlate->prepared && src->bits != dst->bits) {
+            rgb_copy_16(dst, src, &rect, src_x, src_y, xlate);
             return;
         }
         if (src != NULL && mask == NULL && rop4 == 0xCCCC && src->bits != dst->bits &&
@@ -1037,6 +1072,32 @@ void raster_anyblt(const raster_surface *dst, const raster_surface *src, const r
         for (int32_t x = left; x < right; x++) {
             sx_buf[x - left] = stretch_sample(x, dst_rect->left, dst_w, src_rect->left, src_w);
         }
+    }
+
+    raster_rect span = {left, top, right, bottom};
+    if (dst_format == RASTER_FORMAT_16BPP && src != NULL && src_format == RASTER_FORMAT_16BPP &&
+        mask == NULL && rop4 == 0xCCCC && (xlate == NULL || xlate->kind == RASTER_XLATE_TRIVIAL) &&
+        use_sx_table && clip_is_plain(clip, &span)) {
+        int32_t count = right - left;
+        int32_t prev_sy = -1;
+        uint16_t *prev_dst = NULL;
+        for (int32_t y = top; y < bottom; y++) {
+            int32_t sy = stretch_sample(y, dst_rect->top, dst_h, src_rect->top, src_h);
+            uint16_t *drow = (uint16_t *)row_address(dst, y) + left;
+            if (sy == prev_sy && prev_dst != NULL) {
+                for (int32_t i = 0; i < count; i++) {
+                    drow[i] = prev_dst[i];
+                }
+            } else {
+                const uint16_t *srow = (const uint16_t *)row_address(src, sy);
+                for (int32_t i = 0; i < count; i++) {
+                    drow[i] = srow[sx_buf[i]];
+                }
+                prev_sy = sy;
+            }
+            prev_dst = drow;
+        }
+        return;
     }
 
     for (int32_t y = top; y < bottom; y++) {

@@ -167,8 +167,18 @@ static void source_masks(brain_pdev *pdev, XLATEOBJ *pxlo, int32_t src_format,
     masks_for_format(src_format, red, green, blue);
 }
 
-static void dest_masks(XLATEOBJ *pxlo, int32_t dst_format,
+static void dest_masks(brain_pdev *pdev, XLATEOBJ *pxlo, int32_t dst_format,
                        uint32_t *red, uint32_t *green, uint32_t *blue) {
+    if (pxlo != NULL && pxlo->iDstType == PAL_BITFIELDS) {
+        ULONG masks[3] = {0, 0, 0};
+        pdev->eng.XLATEOBJ_cGetPalette(pxlo, XO_DESTPALETTE, 3, masks);
+        if (masks[0] != 0 || masks[1] != 0 || masks[2] != 0) {
+            *red = masks[0];
+            *green = masks[1];
+            *blue = masks[2];
+            return;
+        }
+    }
     if (pxlo != NULL && is_rgb24or32(dst_format)) {
         rgb_order_masks(pxlo->iDstType, red, green, blue);
         return;
@@ -221,7 +231,7 @@ static void xlate_to_raster(brain_pdev *pdev, XLATEOBJ *pxlo, int32_t src_format
     }
     out->kind = RASTER_XLATE_RGB;
     source_masks(pdev, pxlo, src_format, &out->src_red, &out->src_green, &out->src_blue);
-    dest_masks(pxlo, dst_format, &out->dst_red, &out->dst_green, &out->dst_blue);
+    dest_masks(pdev, pxlo, dst_format, &out->dst_red, &out->dst_green, &out->dst_blue);
     if (src_format == dst_format &&
         out->src_red == out->dst_red &&
         out->src_green == out->dst_green &&
@@ -329,7 +339,7 @@ static BOOL APIENTRY brain_BitBlt(SURFOBJ *psoTrg, SURFOBJ *psoSrc, SURFOBJ *pso
     rect.bottom = prclTrg->bottom;
 
     uint32_t dst_masks[3];
-    dest_masks(pxlo, target.format, &dst_masks[0], &dst_masks[1], &dst_masks[2]);
+    dest_masks(pdev, pxlo, target.format, &dst_masks[0], &dst_masks[1], &dst_masks[2]);
 
     brain_snapshot_lock();
     raster_bitblt(&target, source_ptr, mask_ptr, &clip.clip, &xlate, &rect,

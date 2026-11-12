@@ -30,3 +30,14 @@ Specific constants the user has accepted as non-protectable platform interface f
 
 - `IOCTL_HAL_REQUEST_SYSINTR` = 0x01010098 (function 38) and the GPIO OAL IRQ numbering 128 + bank * 32 + pin (254 for the PW-SH2 TE pin, 272 for the PW-A7300 TE pin). Obtained from Platform Builder's `pkfuncs.h` and NXP's `mx28_irq.h` by the measurement session (outside the clean room). Confirmed working on the PW-SH2. See docs/plan.md M9.
 - `CACHE_SYNC_WRITEBACK` = 0x004, the `CacheRangeFlush` flag used to clean the cached primary framebuffer's dirty range to DRAM before the PXP reads it. From Platform Builder's `pkfuncs.h`; the flag name is public (MSDN `CacheSync`/`CacheRangeFlush`) but its value is not. Accepted as a platform interface constant to enable the cached primary (a performance win for read-heavy cases).
+
+## Authorised sources
+
+Present mode only. On 2026-11-12 the user stated that ce600's present-mode implementation was the project's own addition, written independently of Sharp's driver and NXP's BSP, and authorised it as a reference for implementing present mode here:
+
+- `~/Development/brain/ce600/drivers/display-brain/panel_present.cpp`
+- `~/Development/brain/ce600/drivers/display-brain/brain_present.h` (matches our `abi/brain_present.h`)
+- the present-mode parts of `~/Development/brain/ce600/drivers/display-brain/panel_refresh.cpp`
+- the present-mode section of ce600's `docs/display-a7300.md`
+
+Scope is limited to the present-mode code. The rest of ce600's display driver was built alongside Sharp's driver and NXP BSP material and stays off-limits: do not take its PXP, LCDIF, panel setup, recovery or rotation code beyond what has already been established on the device.
