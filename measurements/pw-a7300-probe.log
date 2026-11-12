@@ -1,0 +1,23 @@
+p001 PatBlt solid, mono and colour pattern brushes, 7 ROPs
+p002 PatBlt DIB pattern brushes 1-32 bpp
+p003 BitBlt compatible bitmap to screen, all 256 ROP3s with a solid brush
+p004 BitBlt DIB sections 1-32 bpp to screen, SRCCOPY SRCAND SRCINVERT
+p005 BitBlt screen to DIB sections 1-32 bpp, PatBlt on DIB
+p006 BitBlt DIB section to DIB section, all depth pairs
+p007 StretchBlt 4 stretch modes, grow, shrink, mirror, 1-32 bpp
+p008 SetDIBitsToDevice and StretchDIBits 1-32 bpp
+p009 MaskBlt
+p010 TransparentImage 1-32 bpp, from DC and from bitmap
+p011 GradientFill rect H, rect V, triangle
+p012 Lines: 16 ROP2s, solid dash null pens, widths 0 1 3 9
+p013 Rectangle RoundRect Ellipse Polygon, brushes, pens, ROP2s
+p014 Text: 4 qualities, 3 escapements, opaque and transparent
+p015 Complex clip regions: FillRgn, BitBlt, PatBlt, text
+p016 ScrollDC and ScrollWindowEx
+p017 Palettes and SetDIBColorTable
+p018 Cursor shown, moved, changed, hidden
+p019 DrawEdge DrawFrameControl DrawFocusRect InvertRect DrawIconEx
+p020 SetPixel GetPixel on screen and bitmap
+p021 CreateBitmap mono, CreateCompatibleBitmap, SetBitmapBits, blits
+p022 Rotation 90 180 270 0 with ChangeDisplaySettingsEx
+done

@@ -1,0 +1,6 @@
+build/
+build-nopxp/
+build-test/
+CLAUDE.md
+CLAUDE.local.md
+.DS_Store
