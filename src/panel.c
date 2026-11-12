@@ -14,8 +14,17 @@
 #define CLKCTRL_PHYS_BASE 0x80040000u
 #define CLKCTRL_MAP_SIZE  0x2000u
 #define REG_DIS_LCDIF     0x120
+#define REG_FRAC1         0x1C0
+#define REG_FRAC1_CLR     0x1C8
 #define REG_CLKSEQ        0x1D0
+#define REG_CLKSEQ_CLR    0x1D8
 #define CLKCTRL_CLKGATE   (1u << 31)
+#define DIS_LCDIF_BUSY    (1u << 29)
+#define DIS_LCDIF_DIV_MASK 0x3Fu
+#define DIS_LCDIF_DIV     9u
+#define FRAC1_CLKGATEPIX  (1u << 7)
+#define FRAC1_PIXSTABLE   (1u << 6)
+#define CLKSEQ_BYPASS_DIS_LCDIF (1u << 14)
 
 #define REG_CTRL          0x000
 #define REG_CTRL_SET      0x004
@@ -79,14 +88,42 @@ static void *map_physical(uint32_t phys, uint32_t size) {
     return base;
 }
 
+static int clock_wait(uint32_t offset, uint32_t mask, int want_set) {
+    uint32_t start = GetTickCount();
+    for (;;) {
+        uint32_t set = (g_clkctrl[offset / 4] & mask) != 0;
+        if (set == (uint32_t)want_set) {
+            return 1;
+        }
+        if (GetTickCount() - start > 10) {
+            return 0;
+        }
+    }
+}
+
 static void clock_enable(void) {
     if (g_clkctrl == NULL) {
         return;
     }
     brain_log_value("clock: DIS_LCDIF", g_clkctrl[REG_DIS_LCDIF / 4]);
+    brain_log_value("clock: FRAC1", g_clkctrl[REG_FRAC1 / 4]);
     brain_log_value("clock: CLKSEQ", g_clkctrl[REG_CLKSEQ / 4]);
-    g_clkctrl[REG_DIS_LCDIF / 4] &= ~CLKCTRL_CLKGATE;
+
+    uint32_t div = g_clkctrl[REG_DIS_LCDIF / 4];
+    div &= ~CLKCTRL_CLKGATE;
+    div &= ~DIS_LCDIF_DIV_MASK;
+    div |= DIS_LCDIF_DIV;
+    g_clkctrl[REG_DIS_LCDIF / 4] = div;
+    clock_wait(REG_DIS_LCDIF, DIS_LCDIF_BUSY, 0);
+
+    g_clkctrl[REG_FRAC1_CLR / 4] = FRAC1_CLKGATEPIX;
+    clock_wait(REG_FRAC1, FRAC1_PIXSTABLE, 1);
+
+    g_clkctrl[REG_CLKSEQ_CLR / 4] = CLKSEQ_BYPASS_DIS_LCDIF;
+
     brain_log_value("clock: DIS_LCDIF after", g_clkctrl[REG_DIS_LCDIF / 4]);
+    brain_log_value("clock: FRAC1 after", g_clkctrl[REG_FRAC1 / 4]);
+    brain_log_value("clock: CLKSEQ after", g_clkctrl[REG_CLKSEQ / 4]);
 }
 
 static void reg_write(uint32_t offset, uint32_t value) {
@@ -139,8 +176,22 @@ void brain_panel_set_window(int32_t col_start, int32_t col_count, int32_t page_s
     panel_command(DCS_RAMWR);
 }
 
-static uint32_t g_transfer_count;
 static brain_irq g_lcdif_irq;
+
+static int lcdif_transfer_done(void) {
+    return (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ) ||
+           !(reg_read(REG_CTRL) & CTRL_RUN);
+}
+
+static int lcdif_poll_done(uint32_t timeout_ms) {
+    uint32_t start = GetTickCount();
+    while (!lcdif_transfer_done()) {
+        if (GetTickCount() - start > timeout_ms) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
 int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
     reg_write(REG_CTRL_CLR, CTRL_RUN);
@@ -152,38 +203,18 @@ int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
     reg_write(REG_TRANSFER_COUNT, ((uint32_t)rows << 16) | (uint32_t)pixels_per_row);
     reg_write(REG_CTRL_SET, CTRL_DATA_SELECT | CTRL_LCDIF_MASTER);
 
-    uint32_t t0 = GetTickCount();
     int ok = 0;
     if (g_lcdif_irq.ready) {
         reg_write(REG_CTRL1_SET, CTRL1_CUR_FRAME_DONE_IRQ_EN);
         reg_write(REG_CTRL_SET, CTRL_RUN);
         WaitForSingleObject(g_lcdif_irq.event, 150);
-        ok = (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ) ||
-             !(reg_read(REG_CTRL) & CTRL_RUN);
+        ok = lcdif_transfer_done();
         reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ);
         reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ_EN);
         brain_irq_done(&g_lcdif_irq);
     } else {
         reg_write(REG_CTRL_SET, CTRL_RUN);
-        uint32_t start = GetTickCount();
-        for (;;) {
-            if (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ) {
-                ok = 1;
-                break;
-            }
-            if (!(reg_read(REG_CTRL) & CTRL_RUN)) {
-                ok = 1;
-                break;
-            }
-            if (GetTickCount() - start > 150) {
-                ok = 0;
-                break;
-            }
-        }
-        if (!ok && (!(reg_read(REG_CTRL) & CTRL_RUN) ||
-                    (reg_read(REG_CTRL1) & CTRL1_CUR_FRAME_DONE_IRQ))) {
-            ok = 1;
-        }
+        ok = lcdif_poll_done(150);
     }
     reg_write(REG_CTRL_CLR, CTRL_RUN);
     reg_write(REG_CTRL1_CLR, CTRL1_CUR_FRAME_DONE_IRQ);
@@ -193,10 +224,6 @@ int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
         brain_log_value("xfer TIMEOUT CTRL", reg_read(REG_CTRL));
         brain_log_value("xfer TIMEOUT CTRL1", reg_read(REG_CTRL1));
         brain_log_value("xfer TIMEOUT STAT", reg_read(REG_STAT));
-    } else if (g_transfer_count < 40) {
-        brain_log_value("xfer size", ((uint32_t)rows << 16) | (uint32_t)pixels_per_row);
-        brain_log_value("xfer ms", (unsigned long)(GetTickCount() - t0));
-        g_transfer_count++;
     }
     return ok;
 }

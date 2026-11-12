@@ -492,6 +492,19 @@ static int copy_16(const raster_surface *dst, const raster_surface *src,
     return 1;
 }
 
+static int or_16(const raster_surface *dst, const raster_surface *src,
+                 const raster_rect *rect, int32_t src_x, int32_t src_y) {
+    int32_t count = rect->right - rect->left;
+    for (int32_t row = 0; row < rect->bottom - rect->top; row++) {
+        uint16_t *dest = (uint16_t *)row_address(dst, rect->top + row) + rect->left;
+        const uint16_t *source = (const uint16_t *)row_address(src, src_y + row) + src_x;
+        for (int32_t i = 0; i < count; i++) {
+            dest[i] |= source[i];
+        }
+    }
+    return 1;
+}
+
 static int copy_indexed_16(const raster_surface *dst, const raster_surface *src,
                            const raster_rect *rect, int32_t src_x, int32_t src_y,
                            const raster_xlate *xlate) {
@@ -716,6 +729,11 @@ void raster_bitblt(const raster_surface *dst,
         if (src != NULL && mask == NULL && src->format == RASTER_FORMAT_16BPP &&
             rop4 == 0xCCCC && (xlate == NULL || xlate->kind == RASTER_XLATE_TRIVIAL)) {
             copy_16(dst, src, &rect, src_x, src_y);
+            return;
+        }
+        if (src != NULL && mask == NULL && src->format == RASTER_FORMAT_16BPP &&
+            rop4 == 0xEEEE && (xlate == NULL || xlate->kind == RASTER_XLATE_TRIVIAL)) {
+            or_16(dst, src, &rect, src_x, src_y);
             return;
         }
         if (src != NULL && mask == NULL && rop4 == 0xCCCC && src->bits != dst->bits &&

@@ -28,6 +28,22 @@ Both mappings are worked out from how a portrait write must look on a landscape 
 
 The full-frame write on the PW-SH2 takes about as long as one panel scan. So a transfer started on TE only just stays ahead of the scan line. Partial updates finish well inside a frame.
 
+## LCDIF clock source
+
+The bootloader leaves the LCDIF clocked from the 24 MHz crystal, so a full-frame write takes about 40 ms (about 2.4 TE periods). The replaced driver runs the same panel from `ref_pix` (the PLL `FRAC1` PIX fractional divider) at about 16 to 20 ms per full frame. Three registers differ (device reads, ours vs the replaced driver):
+
+| Register | Offset | Ours | Replaced |
+| --- | --- | --- | --- |
+| `DIS_LCDIF` | 0x120 | 0x00000001 (DIV 1) | 0x00000009 (DIV 9) |
+| `FRAC1` | 0x1C0 | 0x00929294 (PIX gated, frac 20) | 0x00929254 (PIX ungated, stable, frac 20) |
+| `CLKSEQ` | 0x1D0 | 0x00004164 (bit 14 set) | 0x00000164 (bit 14 clear) |
+
+`CLKSEQ` bit 14 `BYPASS_DIS_LCDIF`: 1 selects the crystal, 0 selects `ref_pix`. `FRAC1` low byte is the PIX fractional divider: bit 7 `CLKGATEPIX`, bit 6 `PIXSTABLE`, bits 5:0 `PIXFRAC`. With PIXFRAC 20, `ref_pix` = 480 MHz * 18 / 20 = 432 MHz, divided by `DIS_LCDIF` 9 = 48 MHz.
+
+Clearing only the bypass would switch the LCDIF to a gated `ref_pix` (wedge) or, once ungated, to 432 MHz / 1 (far out of spec). `clock_enable` does the full sequence while the LCDIF is idle and still on bypass: set `DIS_LCDIF` DIV to 9 and wait for its BUSY bit (29) to clear, clear `CLKGATEPIX` via `FRAC1_CLR` (0x1C8, write 0x80) and wait for `PIXSTABLE`, then clear the bypass via `CLKSEQ_CLR` (0x1D8, write 0x4000). It re-applies on recover and resume.
+
+Field meanings are from the i.MX28 Reference Manual (verify the bit layout there); register values are device reads of both drivers (`ce600-lcdif-clock-regs.txt`). The per-board clock figures in the table above predate this finding; treat them as the target (PLL-sourced) rate.
+
 ## Panel Commands
 
 Standard MIPI DCS, as 8-bit commands and parameters over the 16-bit bus:
