@@ -364,8 +364,7 @@ void brain_panel_resume_prepare(void) {
     brain_log_value("panel: resume CTRL", ctrl);
     brain_log_value("panel: resume STAT", reg_read(REG_STAT));
     if (ctrl & (CTRL_SFTRST | CTRL_CLKGATE)) {
-        reg_write(REG_CTRL_SET, CTRL_SFTRST);
-        reg_write(REG_CTRL_CLR, CTRL_SFTRST | CTRL_CLKGATE);
+        lcdif_soft_reset();
         brain_log("panel: resume LCDIF out of reset");
     }
     reg_write(REG_CTRL, g_saved_ctrl);
