@@ -1005,7 +1005,7 @@ static void read_settle_config(void) {
         ERROR_SUCCESS) {
         g_snapshot_enabled = read_reg_dword(key, L"Snapshot", 1);
         g_cadence_enabled = read_reg_dword(key, L"Cadence", BRAIN_CADENCE_DEFAULT);
-        g_te_offset_ms = read_reg_dword(key, L"TeOffsetMs", BRAIN_TE_OFFSET_DEFAULT);
+        g_te_offset_ms = read_reg_dword(key, L"TeOffsetMs", (DWORD)brain_current_board.te_offset_ms);
         g_te_offset_us = read_reg_dword(key, L"TeOffsetUs", 0);
         g_log_enabled = read_reg_dword(key, L"Log", 0);
         RegCloseKey(key);

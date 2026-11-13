@@ -15,7 +15,7 @@ The primary target is the PW-SH2. The PW-A7300 shares the code and builds; its d
 
 - `imagelist` colour-to-mono masks and the polygon fill rule have minor differences from the replaced driver (open).
 - Anti-aliased text and some edges differ from Sharp by a least-significant bit, by design (the driver keeps its own rounding).
-- Night light is PW-A7300 only; the PW-SH2's ILI9805 night light is a later stage.
+- Night light is not implemented yet on either board (the PW-A7300 applet's escape is unhandled).
 - Present mode serves one process at a time and does not rotate while an app presents.
 
 ## Performance

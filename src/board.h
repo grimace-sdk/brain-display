@@ -21,6 +21,7 @@ typedef struct {
     int32_t te_irq;
     int32_t te_timeout_ms;
     int32_t te_period_us;
+    int32_t te_offset_ms;
 } brain_board;
 
 extern const brain_board brain_current_board;
