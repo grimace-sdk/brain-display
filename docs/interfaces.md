@@ -19,14 +19,14 @@ What apps, Control Panel applets and other components already rely on. Everythin
 | 100153 | `DISPLAY_PANEL_COMMAND` | Tools | Raw panel command: command byte then parameters. Only when the registry enables it |
 | 100154 | `DISPLAY_PANEL_READ` | Tools | Command, word count; output words then status. Only when the registry enables it |
 | 100155 | `DISPLAY_NIGHT_LIGHT_PREVIEW` | Night Light applet | Two DWORDs: active, strength (10 to 100) |
-| 100158 to 100163 | Present mode | brr, brainplay | See below |
+| 100158 to 100163 | Present mode | full-screen apps | See below |
 | 0x44444900 | Trace phase marker | ddi-probe | Not for the driver. `ddi-trace.dll` uses it |
 
 Rotation sequence (both devices): 6301 with the angle, 6302, `DrvEnablePDEV` with the new size, 6303, 6304, then GWES redraws everything. The angle also goes to `HKLM\Software\Brain\Display` `Orientation` (DMDO value), which the rotate applet and `autorotate` read. The PW-SH2 rotates at all four angles. The A7300 has no rotation in its UI, but the probe rotated it fine.
 
 ## Present Mode
 
-Full-screen apps (brr, brainplay, ports) draw into their own RGB565 buffers and have them written to the panel on TE, while GDI keeps its normal mode. The ABI is [../abi/brain_present.h](../abi/brain_present.h). Keep it byte for byte. Behaviour apps depend on:
+Full-screen apps draw into their own RGB565 buffers and have them written to the panel on TE, while GDI keeps its normal mode. The ABI is [../abi/brain_present.h](../abi/brain_present.h). Keep it byte for byte. Behaviour apps depend on:
 
 1. `BRAIN_PRESENT_OPEN` (in `BrainPresentOpen`, out `BrainPresentInfo`, 92 bytes): allocates one or two physically contiguous buffers (width and height multiples of 8, at most the screen size), maps them **cached** into the caller, and holds GDI's panel updates. One process at a time. `BRAIN_PRESENT_FAST_CPU` holds the CPU at 454 MHz (board driver) until present mode ends. `Scale` must be 1.
 2. `BRAIN_PRESENT` (in a DWORD buffer index, or a 36-byte `BrainPresentFrame`): cleans the buffer from the cache in the caller's context and queues it. The newest frame is written on the next TE pulse. A newer frame replaces one still waiting (counted as `Replaced`).

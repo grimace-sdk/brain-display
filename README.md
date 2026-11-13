@@ -5,7 +5,7 @@ A clean-room Windows CE 6.0 display driver for Sharp Brain PW-SH2 and PW-A7300 (
 Status: alpha. The driver boots both boards to a full, responsive desktop (correct colours, menus, borders, icons, filled shapes, gradients, transparency, pattern fills, a touchpad cursor) and runs the whole pipeline:
 
 - A host-tested software rasteriser (all ROP3/ROP4, AnyBlt stretch/mirror/convert, TransparentBlt, GradientFill, StrokePath, FillPath, format conversions), checked against a slow reference over random rectangles, formats, clips and ROPs.
-- A PXP + TE refresh: the dirty region is transposed by the PXP into a staging buffer and written over the LCDIF on the tearing-effect pulse, driven by a fixed-N cadence scheduler on a dedicated TE interrupt thread. Tear-free, and faster than both the Sharp and the ce600 driver on every drawbench case.
+- A PXP + TE refresh: the dirty region is transposed by the PXP into a staging buffer and written over the LCDIF on the tearing-effect pulse, driven by a fixed-N cadence scheduler on a dedicated TE interrupt thread. Tear-free, and faster than the stock driver on every benchmark case.
 - Four-angle rotation, suspend/resume, and a touchpad cursor composited at refresh time.
 - Present mode for full-screen apps: RGB565 buffers presented on TE, with up to 8 PXP overlays (colour-keyed RGB565 or ARGB1555), centred sub-screen buffers, and the 454 MHz CPU hold.
 
@@ -33,7 +33,7 @@ Measured on the PW-SH2 at 800x480, 454 MHz, against the stock driver it replaces
 
 Ten of the fill, blit, caret and window cases are pixel-identical to the stock driver; text and stretch paths that read 555-format sources differ by a least-significant bit, by design. Refresh is tear-free.
 
-Present mode is a new capability (the stock driver has none): a full-screen 800x480 app presents at 51.7 fps, a 400x240 centred buffer at the full 59.3 Hz, and brr runs at 40 fps (game-bound) with 6.4 ms from present to panel.
+Present mode is a new capability (the stock driver has none): a full-screen 800x480 app presents at 51.7 fps, a 400x240 centred buffer at the full 59.3 Hz, and a software-rendered 3D racing game runs at 40 fps with 6.4 ms from present to panel.
 
 ## Documents
 

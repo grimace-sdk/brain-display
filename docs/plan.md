@@ -16,7 +16,7 @@ Status at the 0.1.0-alpha tag: stages 1 to 7 done on the PW-SH2; the PW-A7300 sh
 3. **Refresh pipeline.** PXP transpose of each dirty rectangle (8-pixel aligned), two staging buffers, transfer started on TE, idle when nothing is dirty, stuck-transfer recovery, TE timeouts. Rotation at all four angles. Done when `teartest` shows no tear and idle CPU is zero. **Done** - a dedicated TE interrupt thread paces a fixed-N cadence scheduler; tear-free, idle at the desktop about 92%.
 4. **Power.** Suspend and resume (plan M3), with no flash of stale or uninitialised panel memory: Display On only after the first full frame. **Done** - final suspend/resume pass is part of the alpha device run.
 5. **PW-A7300.** Board values, `MADCTL` 0x08 and TE on at init, pointer as a PXP overlay (or CPU-composed in the staging copy), night light. **In progress** - the board builds and shares the pipeline; device validation and night light ongoing.
-6. **Present mode** and the rest of the escapes ([interfaces.md](interfaces.md)), tested with brr and brainplay. **Done** - full-screen and centred present, up to 8 PXP overlays, the CPU hold; verified with teartest and brr. See [present.md](present.md).
+6. **Present mode** and the rest of the escapes ([interfaces.md](interfaces.md)), tested with the present-mode test apps. **Done** - full-screen and centred present, up to 8 PXP overlays, the CPU hold; verified with teartest and a software-rendered game. See [present.md](present.md).
 7. **Performance.** Beat the replaced driver on every drawbench case (below). **Done** - faster than the stock driver on all 22 cases (see the README table).
 
 ## Performance Targets
@@ -62,7 +62,7 @@ Also from that run: at 20 ops/s, the replaced driver's LCDIF was busy 31% of the
 | Rotation 0/90/180/270 (PW-SH2) | Correct picture and touch at each angle |
 | Suspend and resume, 10 times | Panel returns with correct content, no flash |
 | 30 minutes of mixed use, plus an hour of audio playback (PW-SH2) | No hang, no stuck panel |
-| brr, brainplay | Present mode frame rates at least as before |
+| present-mode test apps | Present mode frame rates at least as before |
 | A7300 touchpad | Cursor moves smoothly, no trails, I-beam inverts |
 
 ## Open Questions (measure on the device)

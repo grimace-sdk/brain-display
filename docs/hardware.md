@@ -42,7 +42,7 @@ The bootloader leaves the LCDIF clocked from the 24 MHz crystal, so a full-frame
 
 Clearing only the bypass would switch the LCDIF to a gated `ref_pix` (wedge) or, once ungated, to 432 MHz / 1 (far out of spec). `clock_enable` does the full sequence while the LCDIF is idle and still on bypass: set `DIS_LCDIF` DIV to 9 and wait for its BUSY bit (29) to clear, clear `CLKGATEPIX` via `FRAC1_CLR` (0x1C8, write 0x80) and wait for `PIXSTABLE`, then clear the bypass via `CLKSEQ_CLR` (0x1D8, write 0x4000). It re-applies on recover and resume.
 
-Field meanings are from the i.MX28 Reference Manual (verify the bit layout there); register values are device reads of both drivers (`ce600-lcdif-clock-regs.txt`). The per-board clock figures in the table above predate this finding; treat them as the target (PLL-sourced) rate.
+Field meanings are from the i.MX28 Reference Manual (verify the bit layout there); register values are device reads. The per-board clock figures in the table above predate this finding; treat them as the target (PLL-sourced) rate.
 
 ## Panel Commands
 
