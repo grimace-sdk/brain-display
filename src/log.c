@@ -118,9 +118,14 @@ void brain_log_set_debug(int enabled) {
 }
 
 void brain_log_flush(void) {
-    if (brain_log_file_ready && !brain_log_suspended) {
-        append_buffered();
+    if (brain_log_suspended) {
+        return;
     }
+    if (!brain_log_file_ready) {
+        open_file_ready();
+        return;
+    }
+    append_buffered();
 }
 
 void brain_log_value(const char *label, unsigned long value) {
