@@ -841,6 +841,13 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
             armed = 1;
         }
 
+        if (brain_current_board.te_prepare_ahead && !prepared && dirty_pending()) {
+            raster_rect dirty;
+            if (take_dirty(&dirty)) {
+                prepared = prepare_timed(dirty, cur, &windows[cur], &last_prepare_us);
+            }
+        }
+
         uint32_t period_us = brain_te_period_us();
         DWORD tick_timeout = period_us ? (period_us / 1000) * 2 + 4 : 50;
         DWORD wr = WaitForSingleObject(te_tick, tick_timeout);
