@@ -15,6 +15,27 @@ static DWORD brain_log_length;
 static int brain_log_file_ready;
 static volatile LONG brain_log_suspended;
 static volatile LONG brain_log_debug_enabled;
+static volatile LONG brain_log_hold_until;
+
+static int file_io_held(void) {
+    LONG until = brain_log_hold_until;
+    if (until == 0) {
+        return 0;
+    }
+    if ((LONG)(GetTickCount() - until) >= 0) {
+        brain_log_hold_until = 0;
+        return 0;
+    }
+    return 1;
+}
+
+void brain_log_hold_file_io(DWORD milliseconds) {
+    LONG until = (LONG)(GetTickCount() + milliseconds);
+    if (until == 0) {
+        until = 1;
+    }
+    brain_log_hold_until = until;
+}
 
 static DWORD ascii_length(const char *text) {
     DWORD length = 0;
@@ -60,6 +81,7 @@ static void append_buffered(void) {
     HANDLE file = CreateFileW(brain_log_path, GENERIC_WRITE, FILE_SHARE_READ, NULL,
                               OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (file == INVALID_HANDLE_VALUE) {
+        brain_log_hold_file_io(2000);
         return;
     }
     SetFilePointer(file, 0, NULL, FILE_END);
@@ -86,6 +108,8 @@ static void open_file_ready(void) {
         CloseHandle(file);
         brain_log_length = 0;
         brain_log_file_ready = 1;
+    } else {
+        brain_log_hold_file_io(2000);
     }
 }
 
@@ -94,7 +118,7 @@ static void emit(const char *line) {
         emit_debug(line);
     }
     buffer_line(line);
-    if (!brain_log_file_ready && !brain_log_suspended) {
+    if (!brain_log_file_ready && !brain_log_suspended && !file_io_held()) {
         open_file_ready();
     }
 }
@@ -118,7 +142,7 @@ void brain_log_set_debug(int enabled) {
 }
 
 void brain_log_flush(void) {
-    if (brain_log_suspended) {
+    if (brain_log_suspended || file_io_held()) {
         return;
     }
     if (!brain_log_file_ready) {

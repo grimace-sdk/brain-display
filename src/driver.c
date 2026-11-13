@@ -1077,6 +1077,7 @@ static VOID APIENTRY brain_PowerHandler(DHPDEV dhpdev, BOOL off) {
         brain_panel_display_on();
         brain_refresh_resume();
         brain_log("PowerHandler: resume done");
+        brain_log_hold_file_io(5000);
         brain_log_set_suspended(0);
     }
 }
