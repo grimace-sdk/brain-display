@@ -14,6 +14,7 @@
 #include "panel.h"
 #include "refresh.h"
 #include "te.h"
+#include "pxp.h"
 #include "present.h"
 
 LPVOID AllocPhysMem(DWORD size, DWORD protect, DWORD alignment, DWORD flags, PULONG physical);
@@ -1068,6 +1069,8 @@ static VOID APIENTRY brain_PowerHandler(DHPDEV dhpdev, BOOL off) {
     } else {
         brain_log("PowerHandler: resume enter");
         brain_panel_resume_prepare();
+        brain_pxp_resume();
+        brain_te_recover();
         brain_log("PowerHandler: resume push full");
         brain_refresh_push_full();
         brain_log("PowerHandler: resume push done");

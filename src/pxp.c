@@ -124,6 +124,14 @@ int brain_pxp_available(void) {
     return g_available;
 }
 
+void brain_pxp_resume(void) {
+    if (!g_available) {
+        return;
+    }
+    reg_write(PXP_CTRL_SET, CTRL_SFTRST);
+    reg_write(PXP_CTRL_CLR, CTRL_SFTRST | CTRL_CLKGATE);
+}
+
 static void pxp_program_overlays(const brain_pxp_overlay_set *overlays) {
     uint32_t count = overlays ? overlays->count : 0;
     for (uint32_t i = 0; i < BRAIN_PXP_MAX_OVERLAYS; i++) {

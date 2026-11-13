@@ -963,10 +963,13 @@ void brain_refresh_suspend(void) {
 void brain_refresh_push_full(void) {
     raster_rect full = {0, 0, g_width, g_height};
     brain_panel_window window;
+    brain_log("push full: prepare");
     if (prepare_region(full, 0, &window)) {
+        brain_log("push full: send");
         send_setup(&window);
         send_kick(&window, 0);
         send_wait();
+        brain_log("push full: sent");
     }
 }
 
