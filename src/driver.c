@@ -1,3 +1,9 @@
+/*
+ * driver.c - Windows CE DDI entry points (DrvEnableDriver and the Drv* drawing
+ * callbacks GWES calls). Translates DDI objects into rasteriser calls, marks
+ * dirty regions for the refresh thread, and dispatches escapes including
+ * present mode.
+ */
 #include <windows.h>
 #include <winddi.h>
 #include <string.h>
@@ -1130,13 +1136,11 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
 
 static ULONG APIENTRY brain_slot_stub_28(DHPDEV dhpdev) {
     (void)dhpdev;
-    brain_log("slot 28 called");
     return 0;
 }
 
 static ULONG APIENTRY brain_slot_stub_30(DHPDEV dhpdev) {
     (void)dhpdev;
-    brain_log("slot 30 called");
     return 0;
 }
 
@@ -1144,7 +1148,7 @@ BOOL APIENTRY DrvEnableDriver(ULONG engine_version, ULONG cj, DRVENABLEDATA *pde
     static ENGCALLBACKS saved_callbacks;
     (void)engine_version;
 
-    brain_log("DrvEnableDriver: " BRAIN_BOARD_NAME);
+    brain_log("brain-display " BRAIN_DISPLAY_VERSION " " BRAIN_BOARD_NAME);
     brain_log_value("DrvEnableDriver: cj", cj);
     brain_present_init();
 

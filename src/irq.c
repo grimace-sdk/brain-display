@@ -1,3 +1,8 @@
+/*
+ * irq.c - Thin wrapper over the OAL interrupt API: request a SYSINTR for an
+ * OAL IRQ, bind it to an event with InterruptInitialize, and acknowledge with
+ * InterruptDone.
+ */
 #include <windows.h>
 
 #include "irq.h"

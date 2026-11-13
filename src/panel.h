@@ -1,3 +1,6 @@
+/*
+ * panel.h - LCDIF command-mode panel interface: window addressing and TE-paced transfers.
+ */
 #ifndef BRAIN_PANEL_H
 #define BRAIN_PANEL_H
 

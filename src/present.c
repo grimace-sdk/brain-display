@@ -1,3 +1,9 @@
+/*
+ * present.c - Present-mode escapes (OPEN/PRESENT/WAIT/CLOSE/STATS and overlay
+ * wait). Allocates physically contiguous RGB565 buffers, maps them write-back
+ * cached into the calling app, validates and describes overlays, and holds the
+ * CPU at full speed while an app presents. The refresh thread does the compose.
+ */
 #include <windows.h>
 #include <grimace/extras.h>
 #include <pkfuncs.h>
@@ -28,8 +34,31 @@ typedef BOOL (*process_set_attributes_fn)(DWORD handle_type, DWORD method, DWORD
 #define INFO_SIZE_WITHOUT_OVERLAYS \
     (sizeof(BrainPresentInfo) - sizeof(((BrainPresentInfo *)0)->pOverlayBuffers))
 #define STATS_SIZE_MINIMUM (6 * sizeof(DWORD))
+#define BLOCK_LIMIT 0xFF
+
+#define OVERLAY_ENABLE 0x00000001
+#define OVERLAY_ALPHA_OVERRIDE (0x1u << 1)
+#define OVERLAY_ENABLE_COLOUR_KEY 0x00000008
+#define OVERLAY_FORMAT_ARGB1555 (0x3u << 4)
+#define OVERLAY_FORMAT_RGB565 (0x4u << 4)
+#define OVERLAY_ALPHA_OPAQUE (0xFFu << 8)
+
+#define BOARD_DEVICE TEXT("BRD1:")
+#define BRD_IOCTL_CPU_SCALING 0x102
+#define BRD_CPU_SCALING_FAST 1
+#define NO_SAVED_MODE 0xFFFFFFFFu
+
+typedef struct {
+    DWORD Mode;
+    DWORD CpuMHz;
+    DWORD AhbMHz;
+    DWORD BusyPercent;
+    DWORD Switches;
+} board_cpu_status;
 
 static CRITICAL_SECTION s_lock;
+static CRITICAL_SECTION s_cpu_lock;
+static DWORD s_saved_cpu_mode = NO_SAVED_MODE;
 static int s_ready;
 static void *s_kernel[BRAIN_PRESENT_MAX_BUFFERS];
 static void *s_user[BRAIN_PRESENT_MAX_BUFFERS];
@@ -37,6 +66,11 @@ static uint32_t s_physical[BRAIN_PRESENT_MAX_BUFFERS];
 static DWORD s_buffer_bytes;
 static DWORD s_buffers;
 static DWORD s_owner;
+static void *s_overlay_kernel[BRAIN_PRESENT_MAX_OVERLAYS][BRAIN_PRESENT_MAX_BUFFERS];
+static void *s_overlay_user[BRAIN_PRESENT_MAX_OVERLAYS][BRAIN_PRESENT_MAX_BUFFERS];
+static DWORD s_overlay_bytes[BRAIN_PRESENT_MAX_OVERLAYS];
+static DWORD s_overlay_buffers[BRAIN_PRESENT_MAX_OVERLAYS];
+static DWORD s_overlays;
 static process_set_attributes_fn s_set_attributes;
 
 static DWORD page_bytes(DWORD bytes) {
@@ -70,19 +104,27 @@ static int cache_buffer(HANDLE owner, void *user, DWORD bytes) {
                : 0;
 }
 
+static void free_one(HANDLE owner, void **kernel, void **user) {
+    if (*user != NULL && owner != NULL) {
+        VirtualFreeEx(owner, *user, 0, MEM_RELEASE);
+    }
+    if (*kernel != NULL) {
+        FreePhysMem(*kernel);
+    }
+    *user = NULL;
+    *kernel = NULL;
+}
+
 static void free_buffers(HANDLE owner) {
     for (DWORD buffer = 0; buffer < BRAIN_PRESENT_MAX_BUFFERS; buffer++) {
-        if (s_user[buffer] != NULL && owner != NULL) {
-            VirtualFreeEx(owner, s_user[buffer], 0, MEM_RELEASE);
+        free_one(owner, &s_kernel[buffer], &s_user[buffer]);
+        for (DWORD overlay = 0; overlay < BRAIN_PRESENT_MAX_OVERLAYS; overlay++) {
+            free_one(owner, &s_overlay_kernel[overlay][buffer], &s_overlay_user[overlay][buffer]);
         }
-        if (s_kernel[buffer] != NULL) {
-            FreePhysMem(s_kernel[buffer]);
-        }
-        s_user[buffer] = NULL;
-        s_kernel[buffer] = NULL;
     }
     s_owner = 0;
     s_buffers = 0;
+    s_overlays = 0;
 }
 
 static void release_ended(void) {
@@ -120,6 +162,20 @@ static int alloc_mapped(HANDLE owner, DWORD bytes, void **kernel, void **user, u
     return *user != NULL;
 }
 
+static int block_aligned(DWORD value) {
+    return (value % PRESENT_BLOCK_PIXELS) == 0 && (value / PRESENT_BLOCK_PIXELS) <= BLOCK_LIMIT;
+}
+
+static int valid_overlay(const BrainPresentOverlay *overlay, const BrainPresentOpen *open) {
+    return overlay->Width && overlay->Height && block_aligned(overlay->Left) &&
+           block_aligned(overlay->Top) && block_aligned(overlay->Width) &&
+           block_aligned(overlay->Height) && overlay->Left + overlay->Width <= open->Width &&
+           overlay->Top + overlay->Height <= open->Height && overlay->Buffers >= 1 &&
+           overlay->Buffers <= BRAIN_PRESENT_MAX_BUFFERS &&
+           (overlay->Format == BRAIN_PRESENT_OVERLAY_RGB565 ||
+            overlay->Format == BRAIN_PRESENT_OVERLAY_ARGB1555);
+}
+
 static int valid_open(const BrainPresentOpen *open) {
     if (open->Width == 0 || open->Height == 0) {
         return 0;
@@ -133,8 +189,62 @@ static int valid_open(const BrainPresentOpen *open) {
     if (open->Buffers < 1 || open->Buffers > BRAIN_PRESENT_MAX_BUFFERS) {
         return 0;
     }
-    if (open->Overlays != 0) {
+    if (open->Overlays > BRAIN_PRESENT_MAX_OVERLAYS) {
         return 0;
+    }
+    for (DWORD overlay = 0; overlay < open->Overlays; overlay++) {
+        if (!valid_overlay(&open->Overlay[overlay], open)) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static void describe_overlay(const BrainPresentOverlay *overlay, brain_present_overlay *out) {
+    out->buffers = overlay->Buffers;
+    out->size = ((overlay->Left / PRESENT_BLOCK_PIXELS) << 24) |
+                ((overlay->Top / PRESENT_BLOCK_PIXELS) << 16) |
+                ((overlay->Width / PRESENT_BLOCK_PIXELS) << 8) |
+                (overlay->Height / PRESENT_BLOCK_PIXELS);
+    if (overlay->Format == BRAIN_PRESENT_OVERLAY_ARGB1555) {
+        out->parameters = OVERLAY_ENABLE | OVERLAY_FORMAT_ARGB1555;
+    } else {
+        out->parameters =
+            OVERLAY_ENABLE | OVERLAY_ALPHA_OVERRIDE | OVERLAY_ALPHA_OPAQUE | OVERLAY_FORMAT_RGB565;
+    }
+    if (overlay->Flags & BRAIN_PRESENT_OVERLAY_COLOUR_KEY) {
+        out->parameters |= OVERLAY_ENABLE_COLOUR_KEY;
+    }
+}
+
+static void describe_colour_key(DWORD colour, uint32_t *low, uint32_t *high) {
+    uint32_t red = ((colour >> 11) & 0x1F) << 3;
+    uint32_t green = ((colour >> 5) & 0x3F) << 2;
+    uint32_t blue = (colour & 0x1F) << 3;
+    *low = (red << 16) | (green << 8) | blue;
+    *high = ((red | 0x7) << 16) | ((green | 0x3) << 8) | (blue | 0x7);
+}
+
+static int allocate_overlays(HANDLE owner, const BrainPresentOpen *open, brain_present_source *source,
+                             BrainPresentInfo *info) {
+    s_overlays = open->Overlays;
+    source->overlays = open->Overlays;
+    describe_colour_key(open->ColourKey, &source->colour_key_low, &source->colour_key_high);
+    for (DWORD overlay = 0; overlay < open->Overlays; overlay++) {
+        const BrainPresentOverlay *request = &open->Overlay[overlay];
+        describe_overlay(request, &source->overlay[overlay]);
+        s_overlay_bytes[overlay] =
+            page_bytes(request->Width * request->Height * (DWORD)sizeof(uint16_t));
+        s_overlay_buffers[overlay] = request->Buffers;
+        for (DWORD buffer = 0; buffer < request->Buffers; buffer++) {
+            if (!alloc_mapped(owner, s_overlay_bytes[overlay], &s_overlay_kernel[overlay][buffer],
+                              &s_overlay_user[overlay][buffer],
+                              &source->overlay[overlay].physical[buffer])) {
+                return 0;
+            }
+            cache_buffer(owner, s_overlay_user[overlay][buffer], s_overlay_bytes[overlay]);
+            info->pOverlayBuffers[overlay][buffer] = (UINT16 *)s_overlay_user[overlay][buffer];
+        }
     }
     return 1;
 }
@@ -180,6 +290,9 @@ static int present_open(const BrainPresentOpen *open, BrainPresentInfo *info, DW
     for (DWORD buffer = 0; buffer < s_buffers; buffer++) {
         source.physical[buffer] = s_physical[buffer];
     }
+    if (allocated) {
+        allocated = allocate_overlays(owner, open, &source, info);
+    }
     if (!allocated || !brain_refresh_begin_present(&source, s_owner)) {
         brain_log("present: open failed");
         free_buffers(owner);
@@ -194,6 +307,21 @@ static int present_open(const BrainPresentOpen *open, BrainPresentInfo *info, DW
     info->Height = open->Height;
     info->Scale = 1;
     brain_log_value("present: opened owner", s_owner);
+    brain_log_value("present: overlays", open->Overlays);
+    return 1;
+}
+
+static int valid_frame(const BrainPresentFrame *frame) {
+    if (!caller_owns() || frame->Buffer >= s_buffers) {
+        return 0;
+    }
+    for (DWORD overlay = 0; overlay < BRAIN_PRESENT_MAX_OVERLAYS; overlay++) {
+        DWORD choice = frame->Overlay[overlay];
+        if (choice != BRAIN_PRESENT_KEEP && choice != BRAIN_PRESENT_HIDE &&
+            (overlay >= s_overlays || choice >= s_overlay_buffers[overlay])) {
+            return 0;
+        }
+    }
     return 1;
 }
 
@@ -201,13 +329,20 @@ static int present_frame(const BrainPresentFrame *frame, DWORD *replaced) {
     uint32_t taken = BRAIN_PRESENT_NONE;
     uint32_t start;
 
-    if (!caller_owns() || frame->Buffer >= s_buffers) {
+    if (!valid_frame(frame)) {
         return 0;
     }
     start = brain_us();
     CacheRangeFlush(s_user[frame->Buffer], s_buffer_bytes, CACHE_SYNC_WRITEBACK);
+    for (DWORD overlay = 0; overlay < s_overlays; overlay++) {
+        DWORD choice = frame->Overlay[overlay];
+        if (choice < s_overlay_buffers[overlay]) {
+            CacheRangeFlush(s_overlay_user[overlay][choice], s_overlay_bytes[overlay],
+                            CACHE_SYNC_WRITEBACK);
+        }
+    }
     brain_refresh_add_clean_time(brain_us() - start);
-    if (!brain_refresh_queue_present(frame->Buffer, &taken)) {
+    if (!brain_refresh_queue_present(frame->Buffer, (const uint32_t *)frame->Overlay, &taken)) {
         return 0;
     }
     if (replaced != NULL) {
@@ -233,8 +368,49 @@ static int present_close(void) {
     return 1;
 }
 
+static int board_cpu_scaling(const DWORD *mode, board_cpu_status *status) {
+    HANDLE board = CreateFile(BOARD_DEVICE, GENERIC_READ | GENERIC_WRITE,
+                              FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    DWORD returned = 0;
+    int done;
+
+    if (board == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    done = DeviceIoControl(board, BRD_IOCTL_CPU_SCALING, (void *)mode, mode ? sizeof(DWORD) : 0,
+                           status, sizeof(*status), &returned, NULL)
+               ? 1
+               : 0;
+    CloseHandle(board);
+    return done;
+}
+
+void brain_present_hold_cpu(int hold) {
+    board_cpu_status status;
+    DWORD mode;
+
+    if (!s_ready) {
+        return;
+    }
+    EnterCriticalSection(&s_cpu_lock);
+    if (hold && s_saved_cpu_mode == NO_SAVED_MODE && board_cpu_scaling(NULL, &status)) {
+        DWORD previous = status.Mode;
+
+        mode = BRD_CPU_SCALING_FAST;
+        if (previous != BRD_CPU_SCALING_FAST && board_cpu_scaling(&mode, &status)) {
+            s_saved_cpu_mode = previous;
+        }
+    } else if (!hold && s_saved_cpu_mode != NO_SAVED_MODE) {
+        mode = s_saved_cpu_mode;
+        board_cpu_scaling(&mode, &status);
+        s_saved_cpu_mode = NO_SAVED_MODE;
+    }
+    LeaveCriticalSection(&s_cpu_lock);
+}
+
 void brain_present_init(void) {
     InitializeCriticalSection(&s_lock);
+    InitializeCriticalSection(&s_cpu_lock);
     s_ready = 1;
 }
 
@@ -255,7 +431,11 @@ ULONG brain_present_escape(ULONG code, ULONG cjIn, PVOID pvIn, ULONG cjOut, PVOI
         return result;
     }
     if (code == BRAIN_PRESENT_WAIT_OVERLAY) {
-        return 0;
+        if (pvIn != NULL && cjIn == sizeof(BrainPresentOverlayBuffer) && caller_owns()) {
+            const BrainPresentOverlayBuffer *request = (const BrainPresentOverlayBuffer *)pvIn;
+            result = brain_refresh_wait_overlay(request->Overlay, request->Buffer) ? 1 : 0;
+        }
+        return result;
     }
 
     EnterCriticalSection(&s_lock);

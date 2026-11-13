@@ -1,3 +1,6 @@
+/*
+ * compose.h - Frame/panel coordinate transforms and staging compose declarations.
+ */
 #ifndef BRAIN_COMPOSE_H
 #define BRAIN_COMPOSE_H
 

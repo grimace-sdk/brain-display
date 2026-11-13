@@ -1,3 +1,8 @@
+/*
+ * log.c - Debug log. Buffers lines in memory and batches them to a file on the
+ * SD card once a second; OutputDebugString is gated behind the Log setting
+ * because the debug UART blocks. Keeps the hot path off slow I/O.
+ */
 #include <windows.h>
 
 #include "log.h"

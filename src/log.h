@@ -1,3 +1,6 @@
+/*
+ * log.h - Debug log interface (brain_log, value logging, flush, enable gates).
+ */
 #ifndef BRAIN_LOG_H
 #define BRAIN_LOG_H
 

@@ -1,3 +1,6 @@
+/*
+ * irq.h - brain_irq type and the SYSINTR interrupt helpers.
+ */
 #ifndef BRAIN_IRQ_H
 #define BRAIN_IRQ_H
 

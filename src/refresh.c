@@ -1,3 +1,9 @@
+/*
+ * refresh.c - The refresh thread. Tracks dirty regions, transposes them with
+ * the PXP into staging buffers, and sends them over the LCDIF on the TE pulse
+ * under a fixed-N cadence scheduler. Also runs present mode: composing app
+ * buffers and overlays straight to the panel while GDI updates are held.
+ */
 #include <windows.h>
 #include <grimace/extras.h>
 #include <string.h>
@@ -77,8 +83,14 @@ static HANDLE g_present_owner_handle;
 static uint32_t g_present_pending;
 static uint32_t g_present_reading;
 static uint32_t g_present_queued_us;
+static volatile LONG g_present_clear;
 static HANDLE g_present_done;
 static BrainPresentStats g_present_stats;
+
+#define BRAIN_OVERLAY_HIDDEN 0xFFFFFFFFu
+#define BRAIN_OVERLAY_HIDE 0xFFFFFFFEu
+static uint32_t g_overlay_shown[BRAIN_PRESENT_MAX_OVERLAYS];
+static uint32_t g_overlay_reading[BRAIN_PRESENT_MAX_OVERLAYS];
 
 #define BRAIN_CURSOR_MASK_BYTES 1024
 
@@ -446,29 +458,88 @@ static uint32_t take_present(uint32_t *queued_us) {
 }
 
 static void finish_present_read(void) {
+    uint32_t n;
     EnterCriticalSection(&g_present_lock);
     g_present_reading = BRAIN_PRESENT_NONE;
+    for (n = 0; n < BRAIN_PRESENT_MAX_OVERLAYS; n++) {
+        g_overlay_reading[n] = BRAIN_OVERLAY_HIDDEN;
+    }
     LeaveCriticalSection(&g_present_lock);
     SetEvent(g_present_done);
 }
 
+static void build_overlay_set(brain_pxp_overlay_set *set) {
+    uint32_t n;
+    EnterCriticalSection(&g_present_lock);
+    set->count = g_present_source.overlays;
+    set->colour_key_low = g_present_source.colour_key_low;
+    set->colour_key_high = g_present_source.colour_key_high;
+    for (n = 0; n < g_present_source.overlays && n < BRAIN_PXP_MAX_OVERLAYS; n++) {
+        uint32_t shown = g_overlay_shown[n];
+        g_overlay_reading[n] = shown;
+        if (shown < g_present_source.overlay[n].buffers) {
+            set->overlay[n].physical = g_present_source.overlay[n].physical[shown];
+            set->overlay[n].size = g_present_source.overlay[n].size;
+            set->overlay[n].parameters = g_present_source.overlay[n].parameters;
+        } else {
+            set->overlay[n].physical = 0;
+            set->overlay[n].size = 0;
+            set->overlay[n].parameters = 0;
+        }
+    }
+    LeaveCriticalSection(&g_present_lock);
+}
+
 static int prepare_present(uint32_t index, int buf, brain_panel_window *window) {
-    raster_rect full;
-    full.left = 0;
-    full.top = 0;
-    full.right = g_width;
-    full.bottom = g_height;
+    int32_t pw = (int32_t)g_present_source.width;
+    int32_t ph = (int32_t)g_present_source.height;
+    int32_t left = ((g_width - pw) / 2) & ~7;
+    int32_t top = ((g_height - ph) / 2) & ~7;
+    raster_rect dest;
+    raster_rect src;
+    brain_pxp_overlay_set overlays;
     if (!use_pxp()) {
         return 0;
     }
-    brain_compose_window(&brain_current_board, &full, g_angle, window);
+    dest.left = left;
+    dest.top = top;
+    dest.right = left + pw;
+    dest.bottom = top + ph;
+    src.left = 0;
+    src.top = 0;
+    src.right = pw;
+    src.bottom = ph;
+    brain_compose_window(&brain_current_board, &dest, g_angle, window);
+    build_overlay_set(&overlays);
     uint32_t t0 = brain_us();
-    brain_pxp_transpose(g_present_source.physical[index], g_width, &full,
-                        g_staging_phys[buf], g_angle, brain_current_board.mirror_columns);
+    brain_pxp_transpose_overlays(g_present_source.physical[index], pw, &src, g_staging_phys[buf],
+                                 g_angle, brain_current_board.mirror_columns, &overlays);
     EnterCriticalSection(&g_present_lock);
     g_present_stats.PxpMicroseconds += brain_us() - t0;
     LeaveCriticalSection(&g_present_lock);
     return 1;
+}
+
+static void clear_present_panel(void) {
+    raster_rect full;
+    brain_panel_window window;
+    uint16_t background;
+    size_t pixels;
+    size_t i;
+
+    full.left = 0;
+    full.top = 0;
+    full.right = g_width;
+    full.bottom = g_height;
+    brain_compose_window(&brain_current_board, &full, g_angle, &window);
+    background = (uint16_t)g_present_source.background;
+    pixels = (size_t)window.col_count * window.page_count;
+    for (i = 0; i < pixels; i++) {
+        g_staging[0][i] = background;
+    }
+    send_setup(&window);
+    send_kick(&window, 0);
+    send_wait();
 }
 
 static int present_owner_exited(void) {
@@ -490,14 +561,20 @@ int brain_refresh_begin_present(const brain_present_source *source, uint32_t own
     if (g_thread == NULL) {
         return 0;
     }
-    if (source->width != (uint32_t)g_width || source->height != (uint32_t)g_height) {
+    if (source->width > (uint32_t)g_width || source->height > (uint32_t)g_height) {
         return 0;
     }
     EnterCriticalSection(&g_present_lock);
     if (!g_presenting) {
+        uint32_t n;
         g_present_source = *source;
+        g_present_clear = 1;
         g_present_pending = BRAIN_PRESENT_NONE;
         g_present_reading = BRAIN_PRESENT_NONE;
+        for (n = 0; n < BRAIN_PRESENT_MAX_OVERLAYS; n++) {
+            g_overlay_shown[n] = BRAIN_OVERLAY_HIDDEN;
+            g_overlay_reading[n] = BRAIN_OVERLAY_HIDDEN;
+        }
         memset(&g_present_stats, 0, sizeof(g_present_stats));
         g_present_owner = owner_id;
         InterlockedExchange(&g_presenting, 1);
@@ -507,6 +584,9 @@ int brain_refresh_begin_present(const brain_present_source *source, uint32_t own
     if (!started) {
         return 0;
     }
+    if (source->flags & BRAIN_PRESENT_FAST_CPU) {
+        brain_present_hold_cpu(1);
+    }
     SetEvent(g_wake);
     return 1;
 }
@@ -515,12 +595,18 @@ void brain_refresh_end_present(void) {
     if (g_thread == NULL) {
         return;
     }
+    uint32_t n;
     InterlockedExchange(&g_presenting, 0);
     EnterCriticalSection(&g_present_lock);
     g_present_pending = BRAIN_PRESENT_NONE;
     g_present_reading = BRAIN_PRESENT_NONE;
+    for (n = 0; n < BRAIN_PRESENT_MAX_OVERLAYS; n++) {
+        g_overlay_shown[n] = BRAIN_OVERLAY_HIDDEN;
+        g_overlay_reading[n] = BRAIN_OVERLAY_HIDDEN;
+    }
     LeaveCriticalSection(&g_present_lock);
     SetEvent(g_present_done);
+    brain_present_hold_cpu(0);
     brain_refresh_mark_dirty(0, 0, g_width, g_height);
     SetEvent(g_wake);
 }
@@ -529,11 +615,20 @@ int brain_refresh_presenting(void) {
     return g_presenting;
 }
 
-int brain_refresh_queue_present(uint32_t index, uint32_t *replaced) {
+int brain_refresh_queue_present(uint32_t index, const uint32_t *overlays, uint32_t *replaced) {
+    uint32_t n;
     if (!g_presenting || index >= g_present_source.buffers) {
         return 0;
     }
     EnterCriticalSection(&g_present_lock);
+    for (n = 0; overlays != NULL && n < g_present_source.overlays &&
+                n < BRAIN_PRESENT_MAX_OVERLAYS; n++) {
+        if (overlays[n] == BRAIN_OVERLAY_HIDE) {
+            g_overlay_shown[n] = BRAIN_OVERLAY_HIDDEN;
+        } else if (overlays[n] != BRAIN_PRESENT_KEEP) {
+            g_overlay_shown[n] = overlays[n];
+        }
+    }
     if (replaced != NULL) {
         *replaced = g_present_pending;
     }
@@ -554,6 +649,27 @@ int brain_refresh_wait_present(uint32_t index) {
         int busy;
         EnterCriticalSection(&g_present_lock);
         busy = g_presenting && (g_present_pending == index || g_present_reading == index);
+        LeaveCriticalSection(&g_present_lock);
+        if (!busy) {
+            return 1;
+        }
+        if (GetTickCount() - first >= BRAIN_PRESENT_WAIT_LIMIT_MS) {
+            return 0;
+        }
+        WaitForSingleObject(g_present_done, BRAIN_PRESENT_WAIT_STEP_MS);
+    }
+}
+
+int brain_refresh_wait_overlay(uint32_t overlay, uint32_t buffer) {
+    DWORD first = GetTickCount();
+    if (overlay >= BRAIN_PRESENT_MAX_OVERLAYS) {
+        return 0;
+    }
+    for (;;) {
+        int busy;
+        EnterCriticalSection(&g_present_lock);
+        busy = g_presenting &&
+               (g_overlay_shown[overlay] == buffer || g_overlay_reading[overlay] == buffer);
         LeaveCriticalSection(&g_present_lock);
         if (!busy) {
             return 1;
@@ -619,6 +735,10 @@ static void run_present(HANDLE te_tick) {
     DWORD last_check = GetTickCount();
 
     brain_te_arm();
+    if (g_present_clear) {
+        clear_present_panel();
+        InterlockedExchange(&g_present_clear, 0);
+    }
     while (g_running && g_presenting && !g_paused) {
         if (ready < 0) {
             ready = copy_next_present(cur, &window, &ready_queued_us);

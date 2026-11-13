@@ -1,3 +1,6 @@
+/*
+ * raster.h - Rasteriser surface and rectangle types and the drawing entry points.
+ */
 #ifndef BRAIN_RASTER_H
 #define BRAIN_RASTER_H
 

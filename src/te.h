@@ -1,3 +1,6 @@
+/*
+ * te.h - Tearing-effect interface: arm/disarm, the tick handle, edge count and period.
+ */
 #ifndef BRAIN_TE_H
 #define BRAIN_TE_H
 

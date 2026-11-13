@@ -1,7 +1,13 @@
+/*
+ * board.h - Board descriptor type, the per-board compile-time values, and the
+ * driver version string.
+ */
 #ifndef BRAIN_BOARD_H
 #define BRAIN_BOARD_H
 
 #include <stdint.h>
+
+#define BRAIN_DISPLAY_VERSION "0.1.0-alpha"
 
 typedef struct {
     int32_t screen_width;

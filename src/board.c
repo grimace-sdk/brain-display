@@ -1,3 +1,7 @@
+/*
+ * board.c - Per-board descriptor (panel geometry, TE pin and period, mirror),
+ * selected at compile time by BRAIN_BOARD_pwsh2 / BRAIN_BOARD_pwa7300.
+ */
 #include "board.h"
 
 const brain_board brain_current_board = {

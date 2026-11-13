@@ -1,3 +1,8 @@
+/*
+ * panel.c - Command-mode panel over the LCDIF: pixel clock setup, window
+ * addressing, starting and waiting on TE-paced transfers, and stuck-transfer
+ * recovery.
+ */
 #include <windows.h>
 #include <grimace/extras.h>
 

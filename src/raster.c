@@ -1,3 +1,8 @@
+/*
+ * raster.c - Software rasteriser over pixel buffers: ROP3/ROP4 blits, AnyBlt
+ * stretch/mirror/convert, TransparentBlt, GradientFill, lines, polygon fill,
+ * brushes, and format conversion. Host-testable against a reference.
+ */
 #include "raster.h"
 #include "cleartype_table.h"
 

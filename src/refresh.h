@@ -1,3 +1,6 @@
+/*
+ * refresh.h - Refresh thread lifecycle, dirty marking, rotation and suspend/resume.
+ */
 #ifndef BRAIN_REFRESH_H
 #define BRAIN_REFRESH_H
 

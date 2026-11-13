@@ -1,3 +1,8 @@
+/*
+ * te.c - Tearing-effect signal. Configures the TE GPIO interrupt and runs a
+ * dedicated interrupt service thread that counts and timestamps TE edges,
+ * de-bounces, tracks the period, and signals a tick the refresh thread paces on.
+ */
 #include <windows.h>
 #include <grimace/extras.h>
 #include <stdint.h>

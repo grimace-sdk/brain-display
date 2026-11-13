@@ -1,3 +1,8 @@
+/*
+ * timebase.c - Free-running microsecond timebase. Maps the i.MX28 DIGCTL
+ * microseconds counter and reads it with a single load, in place of the OAL's
+ * busy-looping QueryPerformanceCounter.
+ */
 #include <windows.h>
 #include <grimace/extras.h>
 #include <stdint.h>

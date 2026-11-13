@@ -1,3 +1,8 @@
+/*
+ * pxp.c - i.MX28 PXP. Transposes a rectangle from a source buffer into a
+ * staging buffer with rotation and flip, blending up to eight overlays, and
+ * waits for completion by interrupt or short spin.
+ */
 #include <windows.h>
 #include <grimace/extras.h>
 #include <stdint.h>
@@ -59,9 +64,19 @@ static uint32_t pxp_angle_ctrl(int angle, int mirror) {
 
 #define PXP_SPIN_PX 16384
 
+#define PXP_OL0              0x200
+#define PXP_OL_STRIDE        0x40
+#define PXP_OL_SIZE          0x10
+#define PXP_OL_PARAM         0x20
+#define PXP_OL_PARAM2        0x30
+#define PXP_OLCOLORKEYLOW    0x1A0
+#define PXP_OLCOLORKEYHIGH   0x1B0
+#define PXP_S0COLORKEYLOW    0x180
+#define PXP_S0COLORKEYHIGH   0x190
+#define PXP_S0COLORKEY_OFF   0x00FFFFFF
+
 static volatile uint32_t *g_pxp;
 static int g_available;
-static uint32_t g_op_count;
 static brain_irq g_irq;
 static uint32_t g_path_irq;
 static uint32_t g_path_spin;
@@ -109,8 +124,35 @@ int brain_pxp_available(void) {
     return g_available;
 }
 
+static void pxp_program_overlays(const brain_pxp_overlay_set *overlays) {
+    uint32_t count = overlays ? overlays->count : 0;
+    for (uint32_t i = 0; i < BRAIN_PXP_MAX_OVERLAYS; i++) {
+        uint32_t base = PXP_OL0 + i * PXP_OL_STRIDE;
+        if (i < count) {
+            reg_write(base, overlays->overlay[i].physical);
+            reg_write(base + PXP_OL_SIZE, overlays->overlay[i].size);
+            reg_write(base + PXP_OL_PARAM, overlays->overlay[i].parameters);
+            reg_write(base + PXP_OL_PARAM2, 0);
+        } else {
+            reg_write(base + PXP_OL_PARAM, 0);
+        }
+    }
+    if (count > 0) {
+        reg_write(PXP_OLCOLORKEYLOW, overlays->colour_key_low);
+        reg_write(PXP_OLCOLORKEYHIGH, overlays->colour_key_high);
+        reg_write(PXP_S0COLORKEYLOW, PXP_S0COLORKEY_OFF);
+        reg_write(PXP_S0COLORKEYHIGH, 0);
+    }
+}
+
 int brain_pxp_transpose(uint32_t src_phys, int32_t src_stride_px,
                         const raster_rect *rect, uint32_t dst_phys, int angle, int mirror) {
+    return brain_pxp_transpose_overlays(src_phys, src_stride_px, rect, dst_phys, angle, mirror, NULL);
+}
+
+int brain_pxp_transpose_overlays(uint32_t src_phys, int32_t src_stride_px,
+                                 const raster_rect *rect, uint32_t dst_phys, int angle, int mirror,
+                                 const brain_pxp_overlay_set *overlays) {
     if (!g_available) {
         return 0;
     }
@@ -130,6 +172,8 @@ int brain_pxp_transpose(uint32_t src_phys, int32_t src_stride_px,
     reg_write(PXP_OUTBUF, dst_phys);
     reg_write(PXP_OUTSIZE,
               (0xFFu << 24) | ((uint32_t)rect_w << 12) | (uint32_t)rect_h);
+
+    pxp_program_overlays(overlays);
 
     uint32_t ctrl = CTRL_ENABLE | CTRL_CROP | CTRL_S0_FORMAT_RGB565 |
                     CTRL_OUTBUF_FORMAT_RGB565 | pxp_angle_ctrl(angle, mirror);
@@ -187,9 +231,6 @@ int brain_pxp_transpose(uint32_t src_phys, int32_t src_stride_px,
     if (!ok) {
         brain_log_value("pxp TIMEOUT STAT", reg_read(PXP_STAT));
         brain_log_value("pxp TIMEOUT CTRL", reg_read(PXP_CTRL));
-    } else if (g_op_count < 20) {
-        brain_log_value("pxp op", ((uint32_t)rect_w << 16) | (uint32_t)rect_h);
-        g_op_count++;
     }
     return ok;
 }

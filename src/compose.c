@@ -1,3 +1,8 @@
+/*
+ * compose.c - Maps screen rectangles to panel windows (frame/panel coordinate
+ * transforms for each rotation) and CPU-composes the staging buffer on the
+ * non-PXP path.
+ */
 #include "compose.h"
 
 #include <stddef.h>
