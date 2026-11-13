@@ -359,9 +359,15 @@ void brain_panel_suspend(void) {
 }
 
 void brain_panel_resume_prepare(void) {
+    uint32_t ctrl = reg_read(REG_CTRL);
     brain_log("panel: resume enter");
-    brain_log_value("panel: resume CTRL", reg_read(REG_CTRL));
+    brain_log_value("panel: resume CTRL", ctrl);
     brain_log_value("panel: resume STAT", reg_read(REG_STAT));
+    if (ctrl & (CTRL_SFTRST | CTRL_CLKGATE)) {
+        reg_write(REG_CTRL_SET, CTRL_SFTRST);
+        reg_write(REG_CTRL_CLR, CTRL_SFTRST | CTRL_CLKGATE);
+        brain_log("panel: resume LCDIF out of reset");
+    }
     reg_write(REG_CTRL, g_saved_ctrl);
     reg_write(REG_CTRL1, g_saved_ctrl1);
     reg_write(REG_CTRL2, g_saved_ctrl2);
