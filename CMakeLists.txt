@@ -17,6 +17,7 @@ set(BRAIN_DISPLAY_SOURCES
     src/pxp.c
     src/irq.c
     src/timebase.c
+    src/present.c
 )
 
 foreach(board pwsh2 pwa7300)

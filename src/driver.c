@@ -8,6 +8,7 @@
 #include "panel.h"
 #include "refresh.h"
 #include "te.h"
+#include "present.h"
 
 LPVOID AllocPhysMem(DWORD size, DWORD protect, DWORD alignment, DWORD flags, PULONG physical);
 BOOL FreePhysMem(LPVOID address);
@@ -1089,8 +1090,14 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
             if (query == DRVESC_GETSCREENROTATION || query == DRVESC_SETSCREENROTATION) {
                 return 1;
             }
+            if (brain_present_supported(query)) {
+                return 1;
+            }
         }
         return 0;
+    }
+    if (brain_present_supported(iEsc)) {
+        return brain_present_escape(iEsc, cjIn, pvIn, cjOut, pvOut);
     }
     if (iEsc == DRVESC_SETSCREENROTATION) {
         pdev->orientation = cjIn;
@@ -1139,6 +1146,7 @@ BOOL APIENTRY DrvEnableDriver(ULONG engine_version, ULONG cj, DRVENABLEDATA *pde
 
     brain_log("DrvEnableDriver: " BRAIN_BOARD_NAME);
     brain_log_value("DrvEnableDriver: cj", cj);
+    brain_present_init();
 
     if (callbacks != NULL) {
         memcpy(&saved_callbacks, callbacks, sizeof(saved_callbacks));

@@ -10,6 +10,7 @@
 #include "refresh.h"
 #include "te.h"
 #include "timebase.h"
+#include "present.h"
 #include "log.h"
 
 LPVOID AllocPhysMem(DWORD size, DWORD protect, DWORD alignment, DWORD flags, PULONG physical);
@@ -63,6 +64,21 @@ static volatile LONG g_running;
 static volatile LONG g_paused;
 static uint32_t g_xfer_fail_streak;
 static uint32_t g_te_timeout_streak;
+
+#define BRAIN_PRESENT_CHECK_MS 250
+#define BRAIN_PRESENT_WAIT_LIMIT_MS 500
+#define BRAIN_PRESENT_WAIT_STEP_MS 8
+
+static CRITICAL_SECTION g_present_lock;
+static brain_present_source g_present_source;
+static volatile LONG g_presenting;
+static uint32_t g_present_owner;
+static HANDLE g_present_owner_handle;
+static uint32_t g_present_pending;
+static uint32_t g_present_reading;
+static uint32_t g_present_queued_us;
+static HANDLE g_present_done;
+static BrainPresentStats g_present_stats;
 
 #define BRAIN_CURSOR_MASK_BYTES 1024
 
@@ -418,6 +434,244 @@ static int prepare_timed(raster_rect dirty, int buf, brain_panel_window *window,
     return ok;
 }
 
+static uint32_t take_present(uint32_t *queued_us) {
+    uint32_t index;
+    EnterCriticalSection(&g_present_lock);
+    index = g_present_pending;
+    *queued_us = g_present_queued_us;
+    g_present_pending = BRAIN_PRESENT_NONE;
+    g_present_reading = index;
+    LeaveCriticalSection(&g_present_lock);
+    return index;
+}
+
+static void finish_present_read(void) {
+    EnterCriticalSection(&g_present_lock);
+    g_present_reading = BRAIN_PRESENT_NONE;
+    LeaveCriticalSection(&g_present_lock);
+    SetEvent(g_present_done);
+}
+
+static int prepare_present(uint32_t index, int buf, brain_panel_window *window) {
+    raster_rect full;
+    full.left = 0;
+    full.top = 0;
+    full.right = g_width;
+    full.bottom = g_height;
+    if (!use_pxp()) {
+        return 0;
+    }
+    brain_compose_window(&brain_current_board, &full, g_angle, window);
+    uint32_t t0 = brain_us();
+    brain_pxp_transpose(g_present_source.physical[index], g_width, &full,
+                        g_staging_phys[buf], g_angle, brain_current_board.mirror_columns);
+    EnterCriticalSection(&g_present_lock);
+    g_present_stats.PxpMicroseconds += brain_us() - t0;
+    LeaveCriticalSection(&g_present_lock);
+    return 1;
+}
+
+static int present_owner_exited(void) {
+    DWORD code;
+    if (g_present_owner == 0) {
+        return 0;
+    }
+    if (g_present_owner_handle == NULL) {
+        g_present_owner_handle = OpenProcess(0, FALSE, g_present_owner);
+        if (g_present_owner_handle == NULL) {
+            return 0;
+        }
+    }
+    return GetExitCodeProcess(g_present_owner_handle, &code) && code != STILL_ACTIVE;
+}
+
+int brain_refresh_begin_present(const brain_present_source *source, uint32_t owner_id) {
+    int started = 0;
+    if (g_thread == NULL) {
+        return 0;
+    }
+    if (source->width != (uint32_t)g_width || source->height != (uint32_t)g_height) {
+        return 0;
+    }
+    EnterCriticalSection(&g_present_lock);
+    if (!g_presenting) {
+        g_present_source = *source;
+        g_present_pending = BRAIN_PRESENT_NONE;
+        g_present_reading = BRAIN_PRESENT_NONE;
+        memset(&g_present_stats, 0, sizeof(g_present_stats));
+        g_present_owner = owner_id;
+        InterlockedExchange(&g_presenting, 1);
+        started = 1;
+    }
+    LeaveCriticalSection(&g_present_lock);
+    if (!started) {
+        return 0;
+    }
+    SetEvent(g_wake);
+    return 1;
+}
+
+void brain_refresh_end_present(void) {
+    if (g_thread == NULL) {
+        return;
+    }
+    InterlockedExchange(&g_presenting, 0);
+    EnterCriticalSection(&g_present_lock);
+    g_present_pending = BRAIN_PRESENT_NONE;
+    g_present_reading = BRAIN_PRESENT_NONE;
+    LeaveCriticalSection(&g_present_lock);
+    SetEvent(g_present_done);
+    brain_refresh_mark_dirty(0, 0, g_width, g_height);
+    SetEvent(g_wake);
+}
+
+int brain_refresh_presenting(void) {
+    return g_presenting;
+}
+
+int brain_refresh_queue_present(uint32_t index, uint32_t *replaced) {
+    if (!g_presenting || index >= g_present_source.buffers) {
+        return 0;
+    }
+    EnterCriticalSection(&g_present_lock);
+    if (replaced != NULL) {
+        *replaced = g_present_pending;
+    }
+    g_present_stats.Submitted++;
+    if (g_present_pending != BRAIN_PRESENT_NONE) {
+        g_present_stats.Replaced++;
+    }
+    g_present_pending = index;
+    g_present_queued_us = brain_us();
+    LeaveCriticalSection(&g_present_lock);
+    SetEvent(g_wake);
+    return 1;
+}
+
+int brain_refresh_wait_present(uint32_t index) {
+    DWORD first = GetTickCount();
+    for (;;) {
+        int busy;
+        EnterCriticalSection(&g_present_lock);
+        busy = g_presenting && (g_present_pending == index || g_present_reading == index);
+        LeaveCriticalSection(&g_present_lock);
+        if (!busy) {
+            return 1;
+        }
+        if (GetTickCount() - first >= BRAIN_PRESENT_WAIT_LIMIT_MS) {
+            return 0;
+        }
+        WaitForSingleObject(g_present_done, BRAIN_PRESENT_WAIT_STEP_MS);
+    }
+}
+
+void brain_refresh_add_clean_time(uint32_t microseconds) {
+    EnterCriticalSection(&g_present_lock);
+    g_present_stats.CleanMicroseconds += microseconds;
+    LeaveCriticalSection(&g_present_lock);
+}
+
+void brain_refresh_get_present_stats(BrainPresentStats *stats, int reset) {
+    EnterCriticalSection(&g_present_lock);
+    g_present_stats.State = (DWORD)((g_presenting ? BRAIN_PRESENT_PRESENTING : 0) |
+                                    (g_paused ? BRAIN_PRESENT_SUSPENDED : 0) |
+                                    (brain_te_available() ? BRAIN_PRESENT_TE : 0));
+    g_present_stats.Orientation = (DWORD)g_angle;
+    *stats = g_present_stats;
+    if (reset) {
+        g_present_stats.Frames = 0;
+        g_present_stats.Replaced = 0;
+        g_present_stats.Dropped = 0;
+        g_present_stats.CleanMicroseconds = 0;
+        g_present_stats.PxpMicroseconds = 0;
+        g_present_stats.LatencyMicroseconds = 0;
+        g_present_stats.Submitted = 0;
+        g_present_stats.TeTimeouts = 0;
+    }
+    LeaveCriticalSection(&g_present_lock);
+}
+
+static int copy_next_present(int buf, brain_panel_window *window, uint32_t *queued_us) {
+    uint32_t q;
+    uint32_t index = take_present(&q);
+    int copied = -1;
+    if (index != BRAIN_PRESENT_NONE) {
+        if (prepare_present(index, buf, window)) {
+            copied = buf;
+            *queued_us = q;
+        } else {
+            EnterCriticalSection(&g_present_lock);
+            g_present_stats.Dropped++;
+            LeaveCriticalSection(&g_present_lock);
+        }
+        finish_present_read();
+    }
+    return copied;
+}
+
+static void run_present(HANDLE te_tick) {
+    int cur = 0;
+    int ready = -1;
+    brain_panel_window window;
+    brain_panel_window next_window;
+    uint32_t ready_queued_us = 0;
+    uint32_t next_queued_us = 0;
+    DWORD last_check = GetTickCount();
+
+    brain_te_arm();
+    while (g_running && g_presenting && !g_paused) {
+        if (ready < 0) {
+            ready = copy_next_present(cur, &window, &ready_queued_us);
+            if (ready >= 0) {
+                cur ^= 1;
+            }
+        }
+
+        if (ready < 0) {
+            WaitForSingleObject(g_wake, BRAIN_PRESENT_CHECK_MS);
+        } else {
+            uint32_t period = brain_te_period_us();
+            DWORD tick_timeout = period ? (period / 1000) * 2 + 4 : 50;
+            if (WaitForSingleObject(te_tick, tick_timeout) != WAIT_OBJECT_0) {
+                EnterCriticalSection(&g_present_lock);
+                g_present_stats.TeTimeouts++;
+                LeaveCriticalSection(&g_present_lock);
+            }
+            if (!g_running || !g_presenting || g_paused) {
+                break;
+            }
+            send_setup(&window);
+            uint32_t latency = brain_us() - ready_queued_us;
+            send_kick(&window, ready);
+            int next = copy_next_present(cur, &next_window, &next_queued_us);
+            send_wait();
+            EnterCriticalSection(&g_present_lock);
+            g_present_stats.Frames++;
+            g_present_stats.LatencyMicroseconds += latency;
+            LeaveCriticalSection(&g_present_lock);
+            if (next >= 0) {
+                cur ^= 1;
+                window = next_window;
+                ready_queued_us = next_queued_us;
+            }
+            ready = next;
+        }
+
+        if (GetTickCount() - last_check >= BRAIN_PRESENT_CHECK_MS) {
+            last_check = GetTickCount();
+            if (present_owner_exited()) {
+                brain_log("refresh: present owner exited");
+                brain_refresh_end_present();
+            }
+        }
+    }
+    brain_te_disarm();
+    if (g_present_owner_handle != NULL) {
+        CloseHandle(g_present_owner_handle);
+        g_present_owner_handle = NULL;
+    }
+}
+
 static DWORD WINAPI refresh_thread(LPVOID parameter) {
     (void)parameter;
     CeSetThreadPriority(GetCurrentThread(), BRAIN_REFRESH_PRIORITY);
@@ -439,6 +693,15 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
     HANDLE te_tick = brain_te_tick_handle();
 
     while (g_running) {
+        if (g_presenting && !g_paused) {
+            if (armed) {
+                brain_te_disarm();
+                armed = 0;
+            }
+            prepared = 0;
+            run_present(te_tick);
+            continue;
+        }
         if (g_paused || (!prepared && !dirty_pending())) {
             if (armed) {
                 brain_te_disarm();
@@ -661,6 +924,10 @@ int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
     brain_timebase_init();
     InitializeCriticalSection(&g_lock);
     InitializeCriticalSection(&g_snapshot_lock);
+    InitializeCriticalSection(&g_present_lock);
+    g_present_pending = BRAIN_PRESENT_NONE;
+    g_present_reading = BRAIN_PRESENT_NONE;
+    g_present_done = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_snapshot_lock_ready = 1;
     InitializeCriticalSection(&g_cursor_lock);
     g_dirty.left = 0;
