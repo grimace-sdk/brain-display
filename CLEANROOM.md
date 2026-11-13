@@ -41,3 +41,11 @@ Present mode only. On 2026-11-12 the user stated that ce600's present-mode imple
 - the present-mode section of ce600's `docs/display-a7300.md`
 
 Scope is limited to the present-mode code. The rest of ce600's display driver was built alongside Sharp's driver and NXP BSP material and stays off-limits: do not take its PXP, LCDIF, panel setup, recovery or rotation code beyond what has already been established on the device.
+
+## Registers
+
+Hardware register offsets and fields are from the public i.MX28 Reference Manual, with device measurement where the manual and the silicon disagree (noted in `docs/hardware.md`):
+
+- LCDIF (0x80030000), PXP (0x8002A000), PINCTRL (0x80018000), CLKCTRL (0x80040000), and DIGCTL (0x8001C000, the `HW_DIGCTL_MICROSECONDS` free-running microsecond counter at 0xC0, used as the timebase in place of `QueryPerformanceCounter`).
+- ICOLL interrupt source numbers (LCDIF 38, PXP 39) are from the public Linux `imx28.dtsi` device tree.
+- The present-mode PXP overlay registers (`HW_PXP_OLn` at 0x200 + n*0x40, and the overlay colour-key registers) were read from the running replaced driver on the device through a read-only PXP register dump and decoded against the RM. This is device measurement of runtime register state, the same category as the CLKCTRL reads, not use of off-limits source.

@@ -2,7 +2,38 @@
 
 A clean-room Windows CE 6.0 display driver for Sharp Brain PW-SH2 and PW-A7300 (i.MX28), built with [grimace](https://github.com/grimace-sdk/grimace). It replaces the `ddraw_mx28.dll` slot. Drawing goes through its own software rasteriser, tuned for the RGB565 primary surface, and frames go to the command-mode panel through the LCDIF and PXP, timed by the panel's tearing effect (TE) pulse.
 
-Status: stages 1 and 2 working on the PW-A7300. The driver boots the device to a full, responsive desktop (correct colours, menus, borders, icons, filled shapes, gradients, transparency, pattern fills, a touchpad cursor) and is converged close to pixel-identical with the driver it replaces, checked phase by phase with the GDI probe. The host-testable rasteriser (all ROP3/ROP4, AnyBlt stretch/mirror/convert, TransparentBlt, GradientFill, StrokePath, FillPath, format conversions) passes randomised tests against a slow reference. Refresh is a CPU transpose of the dirty region to a staging buffer written over the LCDIF (no PXP or TE sync yet). Remaining: a few cosmetic probe diffs (exact colour-to-index rule, XO_TO_MONO masks, gradient dithering, dashed lines), and stages 3 to 7 (PXP and TE timing, rotation, power, PW-SH2 board, present mode, performance).
+Status: alpha. The driver boots both boards to a full, responsive desktop (correct colours, menus, borders, icons, filled shapes, gradients, transparency, pattern fills, a touchpad cursor) and runs the whole pipeline:
+
+- A host-tested software rasteriser (all ROP3/ROP4, AnyBlt stretch/mirror/convert, TransparentBlt, GradientFill, StrokePath, FillPath, format conversions), checked against a slow reference over random rectangles, formats, clips and ROPs.
+- A PXP + TE refresh: the dirty region is transposed by the PXP into a staging buffer and written over the LCDIF on the tearing-effect pulse, driven by a fixed-N cadence scheduler on a dedicated TE interrupt thread. Tear-free, and faster than both the Sharp and the ce600 driver on every drawbench case.
+- Four-angle rotation, suspend/resume, and a touchpad cursor composited at refresh time.
+- Present mode for full-screen apps: RGB565 buffers presented on TE, with up to 8 PXP overlays (colour-keyed RGB565 or ARGB1555), centred sub-screen buffers, and the 454 MHz CPU hold.
+
+The primary target is the PW-SH2. The PW-A7300 shares the code and builds; its device validation is ongoing.
+
+## Known limitations
+
+- `imagelist` colour-to-mono masks and the polygon fill rule have minor differences from the replaced driver (open).
+- Anti-aliased text and some edges differ from Sharp by a least-significant bit, by design (the driver keeps its own rounding).
+- Night light is PW-A7300 only; the PW-SH2's ILI9805 night light is a later stage.
+- Present mode serves one process at a time and does not rotate while an app presents.
+
+## Performance
+
+Measured on the PW-SH2 at 800x480, 454 MHz, against the stock driver it replaces (`drawbench`, microseconds per operation, lower is better). All 22 drawbench cases are faster than the stock driver; a representative selection:
+
+| Case | Stock | brain-display | Speedup |
+| --- | --- | --- | --- |
+| Full-screen solid fill | 11504 | 3943 | 2.9x |
+| Full-screen 16 bpp copy | 11241 | 9461 | 1.2x |
+| 28 lines of ClearType text | 81757 | 53524 | 1.5x |
+| StretchBlt 64 to 256 px | 46162 | 2608 | 17.7x |
+| MaskBlt sprite | 3769 | 126 | 29.9x |
+| Open and close a listbox | 62720 | 44923 | 1.4x |
+
+Ten of the fill, blit, caret and window cases are pixel-identical to the stock driver; text and stretch paths that read 555-format sources differ by a least-significant bit, by design. Refresh is tear-free.
+
+Present mode is a new capability (the stock driver has none): a full-screen 800x480 app presents at 51.7 fps, a 400x240 centred buffer at the full 59.3 Hz, and brr runs at 40 fps (game-bound) with 6.4 ms from present to panel.
 
 ## Documents
 
@@ -19,7 +50,7 @@ Status: stages 1 and 2 working on the PW-A7300. The driver boots the device to a
 
 ## Build
 
-grimace's CMake toolchain, ARM, CE 6, platform `brain`, pinned to grimace v0.1.0 (`e977bdb`):
+grimace's CMake toolchain, ARM, CE 6, platform `brain`, pinned to grimace `13e9240` (present mode needs its CE6 cross-process and physical-memory calls):
 
 ```sh
 cmake -S . -B build -G Ninja \
@@ -44,3 +75,11 @@ cd build-test && ctest --output-on-failure
 ## Device testing
 
 `tools/bundle-pwsh2.sh` builds a PW-SH2 `boot.nkp` with the driver in the `ddraw_mx28.dll` slot, using pwsh2-boot's `make-boot-nkp.mjs`. Copy it to the card over ce-debug, keeping the existing `boot.nkp` as a rollback, and reboot.
+
+## Present mode
+
+Full-screen apps can present their own RGB565 frames straight to the panel. See [docs/present.md](docs/present.md) for the guide and [examples/present_minimal.c](examples/present_minimal.c) for a worked example.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -32,7 +32,7 @@ Full-screen apps (brr, brainplay, ports) draw into their own RGB565 buffers and 
 2. `BRAIN_PRESENT` (in a DWORD buffer index, or a 36-byte `BrainPresentFrame`): cleans the buffer from the cache in the caller's context and queues it. The newest frame is written on the next TE pulse. A newer frame replaces one still waiting (counted as `Replaced`).
 3. `BRAIN_PRESENT_WAIT` (in a DWORD index): blocks until the driver no longer reads that buffer (about 7 ms after its PRESENT at 800x480).
 4. `BRAIN_PRESENT_CLOSE`, or the owner process exiting (checked every 250 ms), ends present mode, restores the CPU setting, and redraws the whole screen from the primary.
-5. Overlays (up to 8, each with one or two buffers): blended over each frame (RGB565 opaque or colour-keyed, ARGB1555). Lower numbers are in front. Positions in 8-pixel blocks, not scaled. `BRAIN_PRESENT_WAIT_OVERLAY` returns once a buffer is no longer shown or being read.
+5. Overlays (up to 8, each with one or two buffers): blended over each frame by the PXP (RGB565 opaque or colour-keyed, ARGB1555 with the top bit as alpha). Positions in 8-pixel blocks relative to the app's frame, not scaled. Lower numbers are in front, and where overlays overlap only the front one counts: its transparent pixels show the frame, not the overlays behind it (a colour-keyed overlay 0 hides overlays 1 to 7 under its transparent area). `BRAIN_PRESENT_WAIT_OVERLAY` returns once a buffer is no longer shown or being read.
 6. `BRAIN_PRESENT_STATS`: counters in `BrainPresentStats`.
 
 The first frame after OPEN, a rotation or a resume clears the panel to `Background`. Frames smaller than the screen are centred.
@@ -45,9 +45,18 @@ Measured with the current driver on the PW-SH2 at 800x480 (to match or beat): WA
 
 The PW-SH2's ILI9805 has a public datasheet. Night light there is a later stage.
 
-## Registry Written by the Driver
+## Registry Settings
 
-`HKLM\Software\Brain\Display`: `Orientation` (DMDO), plus counters for stuck transfers and TE timeouts (names are free; keep them under this key). `PanelEscapes` (DWORD, non-zero) enables escapes 100153 and 100154.
+All under `HKLM\Software\Brain\Display`, all DWORD. The refresh thread re-reads them once a second, so "live" settings take effect without a reboot.
+
+| Name | Default | Effect | When |
+| `Cadence` | 1 | 1 picks N per pending send length (every TE for partial updates, every second TE for full frames); 0 forces every-TE sends. | Live |
+| `TeOffsetMs` | 2 | Milliseconds to wait after the TE edge before starting the send, to keep the send clear of the panel scan. | Live |
+| `TeOffsetUs` | 0 | Non-zero overrides `TeOffsetMs` with a QPC-spun sub-millisecond offset. Test knob for the tear sweep; leave 0 in production. | Live |
+| `Snapshot` | 1 | 1 holds a draw lock across the flush and PXP so a frame is tear-free; 0 drops the lock for raw throughput. | Live |
+| `Log` | 0 | 1 emits per-second refresh stats and enables `OutputDebugString`; 0 is silent apart from one-shot init and anomaly lines, which are still batched to the SD log. Debug output blocks on the debug UART, so keep it 0 for timing. | Live |
+
+The driver also writes `Orientation` (the DMDO rotation value, read by the rotate applet and `autorotate`) and counters for stuck transfers and TE timeouts under the same key. `PanelEscapes` (DWORD, non-zero) enables escapes 100153 and 100154.
 
 ## Load and Swap
 

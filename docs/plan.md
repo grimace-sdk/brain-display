@@ -9,13 +9,15 @@
 
 ## Stages
 
+Status at the 0.1.0-alpha tag: stages 1 to 7 done on the PW-SH2; the PW-A7300 shares the code and builds, with device validation ongoing.
+
 1. **Desktop on the PW-SH2.** EnablePDEV, EnableSurface, GetModes, RealizeColor/UnrealizeColor, ContrastControl, an escape stub, and BitBlt on the 16 bpp primary (solid fills, SRCCOPY, 1 bpp text masks), with a generic slow path for everything else. Refresh: after drawing settles, the CPU transposes the dirty bounding box into a staging buffer, which is written on the next TE. Done when it boots to the desktop with a correct picture and Explorer works.
 2. **Complete rasteriser.** All formats, all ROP3/ROP4, AnyBlt (stretch, mirror, conversions), TransparentBlt, GradientFill, StrokePath, FillPath, brushes, complex clips. Done when drawbench's 22 screen hashes match the reference values (below) and the GDI probe's screenshots match the replaced driver's.
-3. **Refresh pipeline.** PXP transpose of each dirty rectangle (8-pixel aligned), two staging buffers, transfer started on TE, idle when nothing is dirty, stuck-transfer recovery, TE timeouts. Rotation at all four angles. Done when `teartest` shows no tear and idle CPU is zero.
-4. **Power.** Suspend and resume (plan M3), with no flash of stale or uninitialised panel memory: Display On only after the first full frame.
-5. **PW-A7300.** Board values, `MADCTL` 0x08 and TE on at init, pointer as a PXP overlay (or CPU-composed in the staging copy), night light.
-6. **Present mode** and the rest of the escapes ([interfaces.md](interfaces.md)), tested with brr and brainplay.
-7. **Performance.** Beat the replaced driver on every drawbench case (below).
+3. **Refresh pipeline.** PXP transpose of each dirty rectangle (8-pixel aligned), two staging buffers, transfer started on TE, idle when nothing is dirty, stuck-transfer recovery, TE timeouts. Rotation at all four angles. Done when `teartest` shows no tear and idle CPU is zero. **Done** - a dedicated TE interrupt thread paces a fixed-N cadence scheduler; tear-free, idle at the desktop about 92%.
+4. **Power.** Suspend and resume (plan M3), with no flash of stale or uninitialised panel memory: Display On only after the first full frame. **Done** - final suspend/resume pass is part of the alpha device run.
+5. **PW-A7300.** Board values, `MADCTL` 0x08 and TE on at init, pointer as a PXP overlay (or CPU-composed in the staging copy), night light. **In progress** - the board builds and shares the pipeline; device validation and night light ongoing.
+6. **Present mode** and the rest of the escapes ([interfaces.md](interfaces.md)), tested with brr and brainplay. **Done** - full-screen and centred present, up to 8 PXP overlays, the CPU hold; verified with teartest and brr. See [present.md](present.md).
+7. **Performance.** Beat the replaced driver on every drawbench case (below). **Done** - faster than the stock driver on all 22 cases (see the README table).
 
 ## Performance Targets
 
