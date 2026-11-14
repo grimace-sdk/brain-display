@@ -1087,6 +1087,7 @@ static VOID APIENTRY brain_PowerHandler(DHPDEV dhpdev, BOOL off) {
 #endif
 #define DRVESC_SETSCREENROTATION 6301
 #define DRVESC_GETSCREENROTATION 6302
+#define DISPLAY_PANEL_COMMAND 100153
 #define DISPLAY_NIGHT_LIGHT_PREVIEW 100155
 #define BRAIN_ESC_FORCE_RECOVER 0x42524543
 
@@ -1104,6 +1105,9 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
             if (query == DISPLAY_NIGHT_LIGHT_PREVIEW) {
                 return 1;
             }
+            if (query == DISPLAY_PANEL_COMMAND && brain_refresh_panel_escapes_enabled()) {
+                return 1;
+            }
             if (brain_present_supported(query)) {
                 return 1;
             }
@@ -1112,6 +1116,13 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
     }
     if (brain_present_supported(iEsc)) {
         return brain_present_escape(iEsc, cjIn, pvIn, cjOut, pvOut);
+    }
+    if (iEsc == DISPLAY_PANEL_COMMAND) {
+        if (!brain_refresh_panel_escapes_enabled() || pvIn == NULL || cjIn == 0) {
+            return (ULONG)-1;
+        }
+        brain_log_value("escape: panel command bytes", cjIn);
+        return brain_refresh_panel_command((const uint8_t *)pvIn, cjIn) ? 0 : (ULONG)-1;
     }
     if (iEsc == DISPLAY_NIGHT_LIGHT_PREVIEW) {
         if (pvIn == NULL || cjIn < 2 * sizeof(ULONG)) {

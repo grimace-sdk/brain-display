@@ -23,4 +23,6 @@ void brain_panel_recover(uint32_t level);
 
 void brain_panel_night_light(uint32_t green_gain, uint32_t blue_gain);
 
+void brain_panel_command_raw(const uint8_t *bytes, uint32_t length);
+
 #endif

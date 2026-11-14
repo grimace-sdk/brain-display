@@ -25,4 +25,7 @@ void brain_refresh_set_rotation(int angle, int32_t width, int32_t height, int32_
 
 void brain_refresh_night_light_preview(int active, uint32_t strength);
 
+int brain_refresh_panel_escapes_enabled(void);
+int brain_refresh_panel_command(const uint8_t *bytes, uint32_t length);
+
 #endif

@@ -173,6 +173,16 @@ static void panel_param(uint32_t param) {
     pio_byte(1, param);
 }
 
+void brain_panel_command_raw(const uint8_t *bytes, uint32_t length) {
+    if (length == 0) {
+        return;
+    }
+    pio_byte(0, bytes[0]);
+    for (uint32_t i = 1; i < length; i++) {
+        pio_byte(1, bytes[i]);
+    }
+}
+
 void brain_panel_set_window(int32_t col_start, int32_t col_count, int32_t page_start, int32_t page_count) {
     int32_t col_end = col_start + col_count - 1;
     int32_t page_end = page_start + page_count - 1;

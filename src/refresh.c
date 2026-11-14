@@ -74,6 +74,13 @@ static DWORD g_night_next;
 static uint32_t g_night_last_green = 0xFFFFFFFFu;
 static uint32_t g_night_last_blue = 0xFFFFFFFFu;
 
+static DWORD g_panel_escapes;
+#define BRAIN_PANEL_CMD_MAX 64
+static uint8_t g_panel_cmd[BRAIN_PANEL_CMD_MAX];
+static volatile LONG g_panel_cmd_len;
+static CRITICAL_SECTION g_panel_cmd_lock;
+static HANDLE g_panel_cmd_done;
+
 #define BRAIN_WHOLE_CACHE_BYTES 16384
 
 static HANDLE g_thread;
@@ -407,6 +414,7 @@ static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window
 
 static void read_settle_config(void);
 static void night_light_tick(void);
+static void panel_command_tick(void);
 
 static void refresh_report(uint32_t *ticks, uint32_t *sends, int n_pending, DWORD *report_at) {
     DWORD now = GetTickCount();
@@ -827,6 +835,7 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
 
     while (g_running) {
         night_light_tick();
+        panel_command_tick();
         if (g_presenting && !g_paused) {
             if (armed) {
                 brain_te_disarm();
@@ -1032,6 +1041,7 @@ static void read_settle_config(void) {
         g_te_offset_ms = read_reg_dword(key, L"TeOffsetMs", (DWORD)brain_current_board.te_offset_ms);
         g_te_offset_us = read_reg_dword(key, L"TeOffsetUs", 0);
         g_log_enabled = read_reg_dword(key, L"Log", 0);
+        g_panel_escapes = read_reg_dword(key, L"PanelEscapes", 0);
         RegCloseKey(key);
     }
     brain_log_set_debug((int)g_log_enabled);
@@ -1087,6 +1097,38 @@ void brain_refresh_night_light_preview(int active, uint32_t strength) {
     }
 }
 
+int brain_refresh_panel_escapes_enabled(void) {
+    return g_panel_escapes != 0;
+}
+
+/* Run a raw panel command on the refresh thread, which owns the panel, so it
+   cannot collide with a frame transfer. Blocks until the refresh thread has
+   sent it. A probe tool, gated by the PanelEscapes registry setting. */
+int brain_refresh_panel_command(const uint8_t *bytes, uint32_t length) {
+    if (length == 0 || length > BRAIN_PANEL_CMD_MAX || !g_running) {
+        return 0;
+    }
+    EnterCriticalSection(&g_panel_cmd_lock);
+    memcpy(g_panel_cmd, bytes, length);
+    ResetEvent(g_panel_cmd_done);
+    InterlockedExchange(&g_panel_cmd_len, (LONG)length);
+    SetEvent(g_wake);
+    DWORD wr = WaitForSingleObject(g_panel_cmd_done, 200);
+    LeaveCriticalSection(&g_panel_cmd_lock);
+    return wr == WAIT_OBJECT_0;
+}
+
+static void panel_command_tick(void) {
+    LONG length = InterlockedExchange(&g_panel_cmd_len, 0);
+    if (length <= 0) {
+        return;
+    }
+    brain_panel_command_raw(g_panel_cmd, (uint32_t)length);
+    if (g_panel_cmd_done != NULL) {
+        SetEvent(g_panel_cmd_done);
+    }
+}
+
 int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
                         int32_t width, int32_t height, int32_t stride) {
     read_settle_config();
@@ -1124,6 +1166,8 @@ int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
     g_present_done = CreateEventW(NULL, FALSE, FALSE, NULL);
     g_snapshot_lock_ready = 1;
     InitializeCriticalSection(&g_cursor_lock);
+    InitializeCriticalSection(&g_panel_cmd_lock);
+    g_panel_cmd_done = CreateEventW(NULL, TRUE, FALSE, NULL);
     g_dirty.left = 0;
     g_dirty.top = 0;
     g_dirty.right = width;
