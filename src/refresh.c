@@ -17,6 +17,7 @@
 #include "te.h"
 #include "timebase.h"
 #include "present.h"
+#include "nightlight.h"
 #include "log.h"
 
 LPVOID AllocPhysMem(DWORD size, DWORD protect, DWORD alignment, DWORD flags, PULONG physical);
@@ -61,6 +62,17 @@ static DWORD g_cadence_enabled = BRAIN_CADENCE_DEFAULT;
 static DWORD g_te_offset_ms = BRAIN_TE_OFFSET_DEFAULT;
 static DWORD g_te_offset_us = 0;
 static DWORD g_log_enabled = 0;
+
+#define BRAIN_NIGHT_WARM_GREEN_DEFAULT 0x18u
+#define BRAIN_NIGHT_WARM_BLUE_DEFAULT 0x00u
+static brain_night_light_config g_night_cfg = {0, 0, 0, 0, 0, BRAIN_NIGHT_WARM_GREEN_DEFAULT,
+                                               BRAIN_NIGHT_WARM_BLUE_DEFAULT};
+static volatile LONG g_night_preview_active;
+static volatile LONG g_night_preview_strength;
+static volatile LONG g_night_dirty;
+static DWORD g_night_next;
+static uint32_t g_night_last_green = 0xFFFFFFFFu;
+static uint32_t g_night_last_blue = 0xFFFFFFFFu;
 
 #define BRAIN_WHOLE_CACHE_BYTES 16384
 
@@ -394,6 +406,7 @@ static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window
 }
 
 static void read_settle_config(void);
+static void night_light_tick(void);
 
 static void refresh_report(uint32_t *ticks, uint32_t *sends, int n_pending, DWORD *report_at) {
     DWORD now = GetTickCount();
@@ -813,6 +826,7 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
     HANDLE te_tick = brain_te_tick_handle();
 
     while (g_running) {
+        night_light_tick();
         if (g_presenting && !g_paused) {
             if (armed) {
                 brain_te_disarm();
@@ -1021,6 +1035,56 @@ static void read_settle_config(void) {
         RegCloseKey(key);
     }
     brain_log_set_debug((int)g_log_enabled);
+
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Brain\\NightLight", 0, KEY_READ, &key) ==
+        ERROR_SUCCESS) {
+        g_night_cfg.enabled = (int)read_reg_dword(key, L"Enabled", 0);
+        g_night_cfg.start_min = read_reg_dword(key, L"Start", 0);
+        g_night_cfg.end_min = read_reg_dword(key, L"End", 0);
+        g_night_cfg.transition_min = read_reg_dword(key, L"Transition", 0);
+        g_night_cfg.strength = read_reg_dword(key, L"Strength", 0);
+        g_night_cfg.warm_green = read_reg_dword(key, L"WarmGreen", BRAIN_NIGHT_WARM_GREEN_DEFAULT);
+        g_night_cfg.warm_blue = read_reg_dword(key, L"WarmBlue", BRAIN_NIGHT_WARM_BLUE_DEFAULT);
+        RegCloseKey(key);
+    } else {
+        g_night_cfg.enabled = 0;
+    }
+}
+
+static void night_light_tick(void) {
+    DWORD now = GetTickCount();
+    int forced = InterlockedExchange(&g_night_dirty, 0);
+    if (!forced && (int32_t)(now - g_night_next) < 0) {
+        return;
+    }
+    g_night_next = now + 1000;
+
+    uint32_t strength;
+    if (InterlockedCompareExchange(&g_night_preview_active, 0, 0)) {
+        strength = (uint32_t)InterlockedCompareExchange(&g_night_preview_strength, 0, 0);
+    } else {
+        SYSTEMTIME local;
+        GetLocalTime(&local);
+        uint32_t minutes = (uint32_t)local.wHour * 60u + (uint32_t)local.wMinute;
+        strength = brain_night_light_schedule_strength(&g_night_cfg, minutes);
+    }
+
+    uint32_t green, blue;
+    brain_night_light_gains(strength, g_night_cfg.warm_green, g_night_cfg.warm_blue, &green, &blue);
+    if (green != g_night_last_green || blue != g_night_last_blue) {
+        g_night_last_green = green;
+        g_night_last_blue = blue;
+        brain_panel_night_light(green, blue);
+    }
+}
+
+void brain_refresh_night_light_preview(int active, uint32_t strength) {
+    InterlockedExchange(&g_night_preview_strength, (LONG)strength);
+    InterlockedExchange(&g_night_preview_active, active ? 1 : 0);
+    InterlockedExchange(&g_night_dirty, 1);
+    if (g_wake != NULL) {
+        SetEvent(g_wake);
+    }
 }
 
 int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,

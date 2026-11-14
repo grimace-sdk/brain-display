@@ -429,3 +429,20 @@ void brain_panel_display_on(void) {
     panel_command(DCS_DISPLAY_ON);
     brain_log("panel: display_on done");
 }
+
+/*
+ * Apply night-light warmth through the panel's own gamma gain. The schedule and
+ * strength maths are board-independent (nightlight.c); only the register write
+ * differs per panel. The gain values are 6-bit, red held at maximum.
+ *
+ * The register write is pending measured data: the A7300 needs the full E2-E5
+ * gamma command parameter arrays to set byte 1 and resend each command, and the
+ * ILI9805 needs a per-colour gain register identified from its datasheet (its
+ * EBOOT init exposes only whole-panel gamma E0/E1). Both are open questions in
+ * docs/plan.md. Until then this logs the computed gains so the schedule can be
+ * validated on device.
+ */
+void brain_panel_night_light(uint32_t green_gain, uint32_t blue_gain) {
+    brain_log_value("night: green gain", green_gain);
+    brain_log_value("night: blue gain", blue_gain);
+}

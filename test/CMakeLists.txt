@@ -23,9 +23,16 @@ add_executable(raster2_test
 target_include_directories(raster2_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
 target_compile_options(raster2_test PRIVATE -Wall -Wextra -O2)
 
+add_executable(nightlight_test
+    nightlight_test.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/nightlight.c)
+target_include_directories(nightlight_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../src)
+target_compile_options(nightlight_test PRIVATE -Wall -Wextra -O2)
+
 enable_testing()
 add_test(NAME raster_random COMMAND raster_test 300000)
 add_test(NAME raster_random_seed2 COMMAND raster_test 300000 2)
 add_test(NAME raster_random_seed3 COMMAND raster_test 300000 12345)
 add_test(NAME compose COMMAND compose_test)
 add_test(NAME raster2 COMMAND raster2_test)
+add_test(NAME nightlight COMMAND nightlight_test)

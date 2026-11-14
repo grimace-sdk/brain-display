@@ -18,6 +18,7 @@ set(BRAIN_DISPLAY_SOURCES
     src/irq.c
     src/timebase.c
     src/present.c
+    src/nightlight.c
 )
 
 foreach(board pwsh2 pwa7300)

@@ -1087,6 +1087,7 @@ static VOID APIENTRY brain_PowerHandler(DHPDEV dhpdev, BOOL off) {
 #endif
 #define DRVESC_SETSCREENROTATION 6301
 #define DRVESC_GETSCREENROTATION 6302
+#define DISPLAY_NIGHT_LIGHT_PREVIEW 100155
 #define BRAIN_ESC_FORCE_RECOVER 0x42524543
 
 static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULONG cjIn, PVOID pvIn,
@@ -1100,6 +1101,9 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
             if (query == DRVESC_GETSCREENROTATION || query == DRVESC_SETSCREENROTATION) {
                 return 1;
             }
+            if (query == DISPLAY_NIGHT_LIGHT_PREVIEW) {
+                return 1;
+            }
             if (brain_present_supported(query)) {
                 return 1;
             }
@@ -1108,6 +1112,17 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
     }
     if (brain_present_supported(iEsc)) {
         return brain_present_escape(iEsc, cjIn, pvIn, cjOut, pvOut);
+    }
+    if (iEsc == DISPLAY_NIGHT_LIGHT_PREVIEW) {
+        if (pvIn == NULL || cjIn < 2 * sizeof(ULONG)) {
+            return (ULONG)-1;
+        }
+        ULONG active = ((ULONG *)pvIn)[0];
+        ULONG strength = ((ULONG *)pvIn)[1];
+        brain_log_value("escape: night light active", active);
+        brain_log_value("escape: night light strength", strength);
+        brain_refresh_night_light_preview((int)active, strength);
+        return 0;
     }
     if (iEsc == DRVESC_SETSCREENROTATION) {
         pdev->orientation = cjIn;
