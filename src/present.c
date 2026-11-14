@@ -289,6 +289,7 @@ static int present_open(const BrainPresentOpen *open, BrainPresentInfo *info, DW
     source.flags = open->Flags;
     for (DWORD buffer = 0; buffer < s_buffers; buffer++) {
         source.physical[buffer] = s_physical[buffer];
+        source.kernel[buffer] = s_kernel[buffer];
     }
     if (allocated) {
         allocated = allocate_overlays(owner, open, &source, info);

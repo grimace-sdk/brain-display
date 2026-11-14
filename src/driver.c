@@ -41,6 +41,7 @@ typedef struct {
     int32_t width;
     int32_t height;
     int32_t stride;
+    void *present_capture;
 
     ULONG orientation;
 } brain_pdev;
@@ -89,6 +90,18 @@ static int surface_to_raster(brain_pdev *pdev, SURFOBJ *pso, raster_surface *out
 
 static int surface_is_primary(brain_pdev *pdev, SURFOBJ *pso) {
     return pso != NULL && pso->dhsurf != 0 && pso->dhsurf == pdev->primary_handle;
+}
+
+/* A screen read while present mode holds the primary (a screenshot) should see
+   the presented frame, not the stale primary. Redirect the source to a capture
+   of the last presented frame. */
+static void redirect_present_source(brain_pdev *pdev, SURFOBJ *psoSrc, raster_surface *source) {
+    if (surface_is_primary(pdev, psoSrc) && brain_refresh_presenting() &&
+        pdev->present_capture != NULL &&
+        brain_refresh_capture_present((uint16_t *)pdev->present_capture, pdev->width, pdev->height,
+                                      pdev->stride)) {
+        source->bits = pdev->present_capture;
+    }
 }
 
 static void masks_for_format(int32_t format, uint32_t *red, uint32_t *green, uint32_t *blue) {
@@ -333,6 +346,7 @@ static BOOL APIENTRY brain_BitBlt(SURFOBJ *psoTrg, SURFOBJ *psoSrc, SURFOBJ *pso
     }
     if (surface_to_raster(pdev, psoSrc, &source)) {
         source_ptr = &source;
+        redirect_present_source(pdev, psoSrc, &source);
     }
     if (surface_to_raster(pdev, psoMask, &mask)) {
         mask_ptr = &mask;
@@ -594,6 +608,8 @@ static HSURF APIENTRY brain_EnableSurface(DHPDEV dhpdev) {
     pdev->primary_surface = pdev->eng.EngCreateDeviceSurface(pdev->primary_handle, size, BMF_16BPP);
     brain_log_value("EnableSurface: primary handle", (unsigned long)pdev->primary_surface);
 
+    pdev->present_capture = LocalAlloc(LMEM_FIXED, framebuffer_bytes);
+
     if (!brain_panel_init()) {
         brain_log("EnableSurface: panel init failed");
     }
@@ -612,6 +628,10 @@ static VOID APIENTRY brain_DisableSurface(DHPDEV dhpdev) {
     if (pdev->primary_surface != 0) {
         pdev->eng.EngDeleteSurface(pdev->primary_surface);
         pdev->primary_surface = 0;
+    }
+    if (pdev->present_capture != NULL) {
+        LocalFree(pdev->present_capture);
+        pdev->present_capture = NULL;
     }
     if (pdev->framebuffer != NULL) {
         VirtualFree(pdev->framebuffer, 0, MEM_RELEASE);
@@ -868,6 +888,7 @@ static BOOL APIENTRY brain_AnyBlt(SURFOBJ *psoDest, SURFOBJ *psoSrc, SURFOBJ *ps
     }
     if (surface_to_raster(pdev, psoSrc, &source)) {
         source_ptr = &source;
+        redirect_present_source(pdev, psoSrc, &source);
     }
     if (surface_to_raster(pdev, psoMask, &mask)) {
         mask_ptr = &mask;

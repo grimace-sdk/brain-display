@@ -14,6 +14,7 @@ typedef struct {
 
 typedef struct {
     uint32_t physical[BRAIN_PRESENT_MAX_BUFFERS];
+    void *kernel[BRAIN_PRESENT_MAX_BUFFERS];
     uint32_t buffers;
     uint32_t width;
     uint32_t height;
@@ -33,6 +34,7 @@ ULONG brain_present_escape(ULONG code, ULONG cjIn, PVOID pvIn, ULONG cjOut, PVOI
 int brain_refresh_begin_present(const brain_present_source *source, uint32_t owner_id);
 void brain_refresh_end_present(void);
 int brain_refresh_presenting(void);
+int brain_refresh_capture_present(uint16_t *dest, int32_t width, int32_t height, int32_t stride_bytes);
 int brain_refresh_queue_present(uint32_t index, const uint32_t *overlays, uint32_t *replaced);
 int brain_refresh_wait_present(uint32_t index);
 int brain_refresh_wait_overlay(uint32_t overlay, uint32_t buffer);
