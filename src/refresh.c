@@ -1061,9 +1061,11 @@ void brain_refresh_resume(void) {
 static void pause_refresh_thread(DWORD timeout_ms) {
     g_paused = 1;
     if (g_pause_ack != NULL) {
+        uint32_t start = brain_us();
         ResetEvent(g_pause_ack);
         SetEvent(g_wake);
         WaitForSingleObject(g_pause_ack, timeout_ms);
+        brain_log_value("refresh: parked us", brain_us() - start);
     } else {
         Sleep(timeout_ms);
     }
