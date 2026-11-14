@@ -35,9 +35,21 @@
 #define PINCTRL_MAP_SIZE  0x2000u
 #define PINCTRL_MUXSEL2   0x120
 #define PINCTRL_MUXSEL3   0x130
+#define PINCTRL_SET       0x004
 #define PINCTRL_CLR       0x008
 #define LCD_MUXSEL2_MASK  0xFFFFFFFFu
 #define LCD_MUXSEL3_MASK  0x00FF0000u
+
+/* Panel control GPIOs that deep sleep drops low. Bank 0 pins 26-27 are the panel
+   power sequence and bank 1 pins 16-23 (LCD_D16-D23 as GPIO) are panel control,
+   both driven high by EBOOT (panel-handoff.md). Bank n DOUT is 0x700 + n*0x10,
+   DOE is 0xB00 + n*0x10. */
+#define PINCTRL_DOUT      0x700
+#define PINCTRL_DOE       0xB00
+#define PANEL_GPIO_BANK0  0
+#define PANEL_GPIO_BANK1  1
+#define PANEL_GPIO_BANK0_MASK 0x0C000000u
+#define PANEL_GPIO_BANK1_MASK 0x00FF0000u
 
 #define REG_CTRL          0x000
 #define REG_CTRL_SET      0x004
@@ -82,6 +94,10 @@ static uint32_t g_saved_ctrl2;
 static uint32_t g_saved_timing;
 static uint32_t g_saved_muxsel2;
 static uint32_t g_saved_muxsel3;
+static uint32_t g_saved_dout0;
+static uint32_t g_saved_dout1;
+static uint32_t g_saved_doe0;
+static uint32_t g_saved_doe1;
 
 static void panel_configure(void);
 
@@ -352,8 +368,14 @@ int brain_panel_init(void) {
     } else {
         g_saved_muxsel2 = g_pinctrl[PINCTRL_MUXSEL2 / 4];
         g_saved_muxsel3 = g_pinctrl[PINCTRL_MUXSEL3 / 4];
+        g_saved_dout0 = g_pinctrl[(PINCTRL_DOUT + PANEL_GPIO_BANK0 * 0x10) / 4];
+        g_saved_dout1 = g_pinctrl[(PINCTRL_DOUT + PANEL_GPIO_BANK1 * 0x10) / 4];
+        g_saved_doe0 = g_pinctrl[(PINCTRL_DOE + PANEL_GPIO_BANK0 * 0x10) / 4];
+        g_saved_doe1 = g_pinctrl[(PINCTRL_DOE + PANEL_GPIO_BANK1 * 0x10) / 4];
         brain_log_value("panel: init MUXSEL2", g_saved_muxsel2);
         brain_log_value("panel: init MUXSEL3", g_saved_muxsel3);
+        brain_log_value("panel: init DOUT0", g_saved_dout0);
+        brain_log_value("panel: init DOUT1", g_saved_dout1);
     }
 
     g_saved_ctrl = reg_read(REG_CTRL);
@@ -407,12 +429,44 @@ static void lcd_pinmux_restore(void) {
     brain_log("panel: resume LCD pinmux restored");
 }
 
+static void pinctrl_restore_bits(uint32_t reg_base, uint32_t saved, uint32_t mask) {
+    uint32_t set_bits = saved & mask;
+    uint32_t clear_bits = ~saved & mask;
+    if (set_bits != 0) {
+        g_pinctrl[(reg_base + PINCTRL_SET) / 4] = set_bits;
+    }
+    if (clear_bits != 0) {
+        g_pinctrl[(reg_base + PINCTRL_CLR) / 4] = clear_bits;
+    }
+}
+
+/*
+ * Deep sleep drops the panel control and power GPIOs low: bank 0 pins 26-27 (the
+ * panel power sequence) and bank 1 pins 16-23 (panel control). Re-drive them to
+ * the state captured at init, value (DOUT) before enable (DOE), before the LCDIF
+ * restore so the panel is powered. A no-op after a short sleep, when the pins are
+ * already set. See panel-handoff.md for the EBOOT provenance.
+ */
+static void panel_gpio_restore(void) {
+    if (g_pinctrl == NULL) {
+        return;
+    }
+    brain_log_value("panel: resume DOUT0", g_pinctrl[(PINCTRL_DOUT + PANEL_GPIO_BANK0 * 0x10) / 4]);
+    brain_log_value("panel: resume DOUT1", g_pinctrl[(PINCTRL_DOUT + PANEL_GPIO_BANK1 * 0x10) / 4]);
+    pinctrl_restore_bits(PINCTRL_DOUT + PANEL_GPIO_BANK0 * 0x10, g_saved_dout0, PANEL_GPIO_BANK0_MASK);
+    pinctrl_restore_bits(PINCTRL_DOUT + PANEL_GPIO_BANK1 * 0x10, g_saved_dout1, PANEL_GPIO_BANK1_MASK);
+    pinctrl_restore_bits(PINCTRL_DOE + PANEL_GPIO_BANK0 * 0x10, g_saved_doe0, PANEL_GPIO_BANK0_MASK);
+    pinctrl_restore_bits(PINCTRL_DOE + PANEL_GPIO_BANK1 * 0x10, g_saved_doe1, PANEL_GPIO_BANK1_MASK);
+    brain_log("panel: resume panel GPIO restored");
+}
+
 void brain_panel_resume_prepare(void) {
     uint32_t ctrl = reg_read(REG_CTRL);
     brain_log("panel: resume enter");
     brain_log_value("panel: resume CTRL", ctrl);
     brain_log_value("panel: resume STAT", reg_read(REG_STAT));
     lcd_pinmux_restore();
+    panel_gpio_restore();
     if (ctrl & (CTRL_SFTRST | CTRL_CLKGATE)) {
         lcdif_soft_reset();
         brain_log("panel: resume LCDIF out of reset");
