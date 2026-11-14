@@ -111,6 +111,10 @@ static uint32_t g_saved_doe0;
 static uint32_t g_saved_doe1;
 
 static void panel_configure(void);
+#if defined(BRAIN_BOARD_pwsh2)
+static void panel_reset_pulse(void);
+static void panel_ili9805_init(void);
+#endif
 
 static volatile uint32_t *g_lcdif;
 static volatile uint32_t *g_clkctrl;
@@ -343,10 +347,18 @@ void brain_panel_recover(uint32_t level) {
         reg_write(REG_TIMING, g_saved_timing);
     } else {
         brain_log("panel: recover L3 panel reinit");
+#if defined(BRAIN_BOARD_pwsh2)
+        panel_reset_pulse();
+        panel_ili9805_init();
+        panel_command(DCS_SLEEP_OUT);
+        Sleep(120);
+        panel_command(DCS_DISPLAY_ON);
+#else
         panel_command(DCS_SLEEP_OUT);
         Sleep(120);
         panel_configure();
         panel_command(DCS_DISPLAY_ON);
+#endif
     }
 }
 
