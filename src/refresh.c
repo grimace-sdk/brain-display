@@ -85,6 +85,7 @@ static HANDLE g_panel_cmd_done;
 
 static HANDLE g_thread;
 static HANDLE g_wake;
+static HANDLE g_pause_ack;
 static volatile LONG g_running;
 static volatile LONG g_paused;
 static uint32_t g_xfer_fail_streak;
@@ -902,6 +903,9 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
             }
             if (g_paused) {
                 prepared = 0;
+                if (g_pause_ack != NULL) {
+                    SetEvent(g_pause_ack);
+                }
             }
             refresh_report(&ticks, &sends, n_pending, &report_at);
             WaitForSingleObject(g_wake, 1000);
@@ -1051,9 +1055,22 @@ void brain_refresh_resume(void) {
     brain_refresh_mark_dirty(0, 0, g_width, g_height);
 }
 
-void brain_refresh_set_rotation(int angle, int32_t width, int32_t height, int32_t stride) {
+/* Pause the refresh thread and wait until it parks, so geometry never changes
+   under an in-flight send. Returns as soon as the thread acknowledges, rather
+   than after a fixed delay; the timeout is a safety bound. */
+static void pause_refresh_thread(DWORD timeout_ms) {
     g_paused = 1;
-    Sleep(60);
+    if (g_pause_ack != NULL) {
+        ResetEvent(g_pause_ack);
+        SetEvent(g_wake);
+        WaitForSingleObject(g_pause_ack, timeout_ms);
+    } else {
+        Sleep(timeout_ms);
+    }
+}
+
+void brain_refresh_set_rotation(int angle, int32_t width, int32_t height, int32_t stride) {
+    pause_refresh_thread(200);
     EnterCriticalSection(&g_lock);
     g_angle = angle;
     g_width = width;
@@ -1229,6 +1246,7 @@ int brain_refresh_start(void *framebuffer, uint32_t framebuffer_phys,
         brain_log("refresh: CreateEvent failed");
         return 0;
     }
+    g_pause_ack = CreateEventW(NULL, TRUE, FALSE, NULL);
 
     brain_te_init();
     if (g_use_pxp && g_framebuffer_phys != 0) {
