@@ -92,6 +92,15 @@ static int surface_is_primary(brain_pdev *pdev, SURFOBJ *pso) {
     return pso != NULL && pso->dhsurf != 0 && pso->dhsurf == pdev->primary_handle;
 }
 
+/* Trace a DDI entry, but only while presenting and with Log on, so the call
+   sequence of a screenshot taken during present mode can be timed without any
+   cost on the normal draw path. */
+static void ddi_trace(const char *name) {
+    if (brain_log_debug_active() && brain_refresh_presenting()) {
+        brain_log_value(name, GetTickCount());
+    }
+}
+
 /* A screen read while present mode holds the primary (a screenshot) should see
    the presented frame, not the stale primary. Redirect the source to a capture
    of the last presented frame. */
@@ -341,6 +350,7 @@ static BOOL APIENTRY brain_BitBlt(SURFOBJ *psoTrg, SURFOBJ *psoSrc, SURFOBJ *pso
     raster_rect rect;
     uint32_t xlate_table[256];
 
+    ddi_trace("ddi BitBlt in");
     if (!surface_to_raster(pdev, psoTrg, &target)) {
         return FALSE;
     }
@@ -375,12 +385,16 @@ static BOOL APIENTRY brain_BitBlt(SURFOBJ *psoTrg, SURFOBJ *psoSrc, SURFOBJ *pso
         raster_normalise_rect(&dirty);
         brain_refresh_mark_dirty(dirty.left, dirty.top, dirty.right, dirty.bottom);
     }
+    ddi_trace("ddi BitBlt out");
     return TRUE;
 }
 
 static BOOL APIENTRY brain_CopyBits(SURFOBJ *psoDest, SURFOBJ *psoSrc, CLIPOBJ *pco, XLATEOBJ *pxlo,
                                     RECTL *prclDest, POINTL *pptlSrc) {
-    return brain_BitBlt(psoDest, psoSrc, NULL, pco, pxlo, prclDest, pptlSrc, NULL, NULL, NULL, 0xCCCC);
+    ddi_trace("ddi CopyBits in");
+    BOOL ok = brain_BitBlt(psoDest, psoSrc, NULL, pco, pxlo, prclDest, pptlSrc, NULL, NULL, NULL, 0xCCCC);
+    ddi_trace("ddi CopyBits out");
+    return ok;
 }
 
 static ULONG pack_rgb565(ULONG colour) {
@@ -883,6 +897,8 @@ static BOOL APIENTRY brain_AnyBlt(SURFOBJ *psoDest, SURFOBJ *psoSrc, SURFOBJ *ps
     raster_rect dst_rect, src_rect;
     uint32_t xlate_table[256];
 
+    ddi_trace("ddi AnyBlt in");
+
     if (!surface_to_raster(pdev, psoDest, &target)) {
         return FALSE;
     }
@@ -1015,6 +1031,7 @@ static BOOL APIENTRY brain_GradientFill(SURFOBJ *pso, CLIPOBJ *pco, XLATEOBJ *px
 
 static HBITMAP APIENTRY brain_CreateDeviceBitmap(DHPDEV dhpdev, SIZEL sizl, ULONG iFormat) {
     brain_pdev *pdev = (brain_pdev *)dhpdev;
+    ddi_trace("ddi CreateDeviceBitmap");
     if (iFormat != BMF_16BPP || sizl.cx <= 0 || sizl.cy <= 0) {
         return (HBITMAP)0xFFFFFFFF;
     }
@@ -1042,6 +1059,7 @@ static HBITMAP APIENTRY brain_CreateDeviceBitmap(DHPDEV dhpdev, SIZEL sizl, ULON
 
 static VOID APIENTRY brain_DeleteDeviceBitmap(DHSURF dhsurf) {
     brain_devbitmap *bitmap = (brain_devbitmap *)dhsurf;
+    ddi_trace("ddi DeleteDeviceBitmap");
     if (bitmap == NULL) {
         return;
     }

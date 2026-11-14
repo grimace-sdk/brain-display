@@ -141,6 +141,10 @@ void brain_log_set_debug(int enabled) {
     InterlockedExchange(&brain_log_debug_enabled, enabled ? 1 : 0);
 }
 
+int brain_log_debug_active(void) {
+    return brain_log_debug_enabled != 0;
+}
+
 void brain_log_flush(void) {
     if (brain_log_suspended || file_io_held()) {
         return;
