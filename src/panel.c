@@ -31,6 +31,14 @@
 #define FRAC1_PIXSTABLE   (1u << 6)
 #define CLKSEQ_BYPASS_DIS_LCDIF (1u << 14)
 
+#define PINCTRL_PHYS_BASE 0x80018000u
+#define PINCTRL_MAP_SIZE  0x2000u
+#define PINCTRL_MUXSEL2   0x120
+#define PINCTRL_MUXSEL3   0x130
+#define PINCTRL_CLR       0x008
+#define LCD_MUXSEL2_MASK  0xFFFFFFFFu
+#define LCD_MUXSEL3_MASK  0x00FF0000u
+
 #define REG_CTRL          0x000
 #define REG_CTRL_SET      0x004
 #define REG_CTRL_CLR      0x008
@@ -72,11 +80,14 @@ static uint32_t g_saved_ctrl;
 static uint32_t g_saved_ctrl1;
 static uint32_t g_saved_ctrl2;
 static uint32_t g_saved_timing;
+static uint32_t g_saved_muxsel2;
+static uint32_t g_saved_muxsel3;
 
 static void panel_configure(void);
 
 static volatile uint32_t *g_lcdif;
 static volatile uint32_t *g_clkctrl;
+static volatile uint32_t *g_pinctrl;
 
 static uint32_t reg_read(uint32_t offset) {
     return g_lcdif[offset / 4];
@@ -325,6 +336,16 @@ int brain_panel_init(void) {
         clock_enable();
     }
 
+    g_pinctrl = (volatile uint32_t *)map_physical(PINCTRL_PHYS_BASE, PINCTRL_MAP_SIZE);
+    if (g_pinctrl == NULL) {
+        brain_log("panel: PINCTRL map failed");
+    } else {
+        g_saved_muxsel2 = g_pinctrl[PINCTRL_MUXSEL2 / 4];
+        g_saved_muxsel3 = g_pinctrl[PINCTRL_MUXSEL3 / 4];
+        brain_log_value("panel: init MUXSEL2", g_saved_muxsel2);
+        brain_log_value("panel: init MUXSEL3", g_saved_muxsel3);
+    }
+
     g_saved_ctrl = reg_read(REG_CTRL);
     g_saved_ctrl1 = reg_read(REG_CTRL1);
     g_saved_ctrl2 = reg_read(REG_CTRL2);
@@ -358,11 +379,30 @@ void brain_panel_suspend(void) {
     brain_log("panel: suspend done");
 }
 
+/*
+ * Deep sleep parks the LCD bus and control strobes back to GPIO. The LCDIF
+ * function is mux value 0 on these bank-1 pins, so restoring it is a clear of
+ * the owned fields: all of MUXSEL2 (LCD_D00-D15) and MUXSEL3 bits 16-23 (pins
+ * 24-27, the RD/WR/RS/CS strobes). Using the CLR register leaves the other
+ * pins in MUXSEL3 untouched, and the clear is a no-op after a short sleep.
+ */
+static void lcd_pinmux_restore(void) {
+    if (g_pinctrl == NULL) {
+        return;
+    }
+    brain_log_value("panel: resume MUXSEL2", g_pinctrl[PINCTRL_MUXSEL2 / 4]);
+    brain_log_value("panel: resume MUXSEL3", g_pinctrl[PINCTRL_MUXSEL3 / 4]);
+    g_pinctrl[(PINCTRL_MUXSEL2 + PINCTRL_CLR) / 4] = LCD_MUXSEL2_MASK;
+    g_pinctrl[(PINCTRL_MUXSEL3 + PINCTRL_CLR) / 4] = LCD_MUXSEL3_MASK;
+    brain_log("panel: resume LCD pinmux restored");
+}
+
 void brain_panel_resume_prepare(void) {
     uint32_t ctrl = reg_read(REG_CTRL);
     brain_log("panel: resume enter");
     brain_log_value("panel: resume CTRL", ctrl);
     brain_log_value("panel: resume STAT", reg_read(REG_STAT));
+    lcd_pinmux_restore();
     if (ctrl & (CTRL_SFTRST | CTRL_CLKGATE)) {
         lcdif_soft_reset();
         brain_log("panel: resume LCDIF out of reset");
