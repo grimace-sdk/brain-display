@@ -2,6 +2,7 @@
 
 Status: proposal for review, not implemented. Pairs with M7 (both treat the
 desktop and the present frame as layers). Target consumer: windowed SDL apps.
+Incorporates review feedback from the device session.
 
 ## Idea
 
@@ -15,23 +16,29 @@ The PXP pass already does S0 (base) plus up to eight overlays into the staging
 buffer, then the LCDIF sends staging to the panel. Full-screen present uses the
 app buffer as S0. Over-desktop reuses the same pass with a different layering:
 
-- S0 = the GDI primary framebuffer (the whole desktop), transposed as in normal
-  GDI refresh.
+- S0 = the GDI primary framebuffer (the desktop).
 - The app's frame = one overlay, placed at the window rect.
 - Output = desktop with the app frame laid over it.
 
-So the per-TE work is one full-frame PXP pass with S0 = primary and one overlay,
-about 8.8 ms on the SH2 (measured for a full-frame pass with overlays).
+Do not re-compose the whole frame every TE. Like the GDI path, compose only the
+changed region: `(window rect) union (GDI dirty rects)`. S0 is cropped to that
+region and the overlay is clipped to it. Cost then scales with window size - a
+320x240 window is about a fifth of a frame, not ~8.8 ms per TE - and the
+snapshot-lock stall shrinks to the region read (see open question 3). A full-frame
+pass is needed only for the first frame and after rotation or a window move.
 
 ## ABI
 
 - New OPEN flag `BRAIN_PRESENT_OVER_DESKTOP`.
 - Window position: `Left`/`Top` in `BrainPresentOpen`, screen space, 8-pixel block
-  aligned (the app frame is placed there, not centred). `Width`/`Height` stay the
+  aligned; the app frame is placed there, not centred. `Width`/`Height` stay the
   app frame size.
-- The app frame takes the overlay slot, so in this mode the app does not get the
-  eight PXP overlays (see "Layering limit"). An app that wants sub-layers composes
-  them into its own frame buffer and presents the finished frame.
+- Window moves without re-opening: the app updates `Left`/`Top` through a
+  `BrainPresentFrame` field per present. The driver adds the old rect to the dirty
+  region so the desktop under the vacated position is restored.
+- Overlays: OPEN with `BRAIN_PRESENT_OVER_DESKTOP` and `Overlays > 0` fails,
+  rather than silently ignoring them (see "Layering limit"). The app composes any
+  sub-layers into its own frame and presents the finished frame.
 
 ## Open questions
 
@@ -41,11 +48,12 @@ The PXP overlay is always in front of S0, so a naive composite draws the app
 frame on top of everything, even windows stacked above it. Correct occlusion
 needs the app's visible region, which GWES owns, not the driver.
 
-- Phase 1, foreground-only: the app tells the driver whether it is unoccluded
-  (it sees activation and z-order changes). When unoccluded, composite the frame;
-  when occluded, stop compositing and show the plain desktop that TE. Correct for
-  the common case (one active app), and the app simply vanishes to desktop when
-  covered. Signalled by a per-frame flag or a small escape.
+- Phase 1, foreground-only: the app signals whether it is unoccluded (it sees
+  activation and z-order changes). When unoccluded, composite the frame; when it
+  flips to occluded, add the window rect to the dirty region so the desktop
+  underneath is redrawn that TE (otherwise the last app frame stays stale in
+  staging), and stop compositing until it is unoccluded again. Correct for the
+  common case of one active app.
 - Phase 2, clip-rect list: the app submits its visible sub-rects and the driver
   overlays only those. Accurate partial occlusion, more work on both sides, and
   the 8-pixel overlay grid limits the rect granularity.
@@ -55,24 +63,23 @@ renders on top.
 
 ### 2. Rotation
 
-The window rect is screen space; the PXP composite maps screen to panel by angle.
-Transform the rect with the same screen-to-panel mapping the primary uses
-(`brain_compose_window` + `g_angle`), then align the result to 8-pixel blocks
-(round or pad). Expect up to a 7-pixel placement quantisation from the grid.
+Two parts:
+- Window rect: it is screen space; the PXP composite maps screen to panel by
+  angle. Transform the rect with the same screen-to-panel mapping the primary
+  uses (`brain_compose_window` + `g_angle`), then align to 8-pixel blocks.
+- Rotation while open: the driver ends over-desktop present on a rotation and the
+  app re-opens, matching the full-screen rule that there is no rotation while
+  presenting. Simpler than transforming live state across the re-entrant
+  EnablePDEV.
 
 ### 3. Snapshot-lock interaction with GDI draws
 
 The per-TE PXP reads the primary (S0) while GWES draws to it. For a consistent
 frame, take the snapshot lock around the S0 read, the same contract as tear-free
-GDI refresh (the `Snapshot` setting). The cost is that GDI draws stall for the
-read window (up to ~8.8 ms per composited TE), heavier than normal GDI refresh
-because the whole frame is re-read rather than a dirty region. The app overlay is
-always consistent (it is the app's own buffer).
-
-Mitigation: only re-composite when the primary is dirty or the app presented a
-new frame; when neither changed, resend the last staging buffer and skip the PXP.
-With a static desktop and a 60 fps app, that is still a full-frame pass per app
-frame.
+GDI refresh (the `Snapshot` setting). Because the read is cropped to the compose
+region (window union dirty), the stall is bounded by the region size, not a full
+frame - which answers most of the concern. The app overlay is always consistent
+(it is the app's own buffer).
 
 ## Layering limit (PXP overlap rule)
 
@@ -81,18 +88,20 @@ transparent pixels show S0, not the overlays behind. With S0 = desktop, a
 transparent pixel in a front app-overlay would show the desktop, not the app
 frame behind it. So the app frame and the app's own overlays cannot be stacked as
 separate PXP overlays over a desktop S0 and composite correctly. Hence the app
-presents one finished frame in this mode (its own sub-layers baked in), and the
-driver overlays that single frame over the desktop.
+presents one finished frame in this mode (its own sub-layers baked in), and OPEN
+rejects `Overlays > 0`.
 
 ## Phasing
 
-1. Full frame over desktop, foreground-only occlusion, no app-side overlays,
-   rotation handled, snapshot-locked S0 read, re-composite only on change.
+1. Region compose over desktop, per-frame window position, foreground-only
+   occlusion, rotation ends present, snapshot-locked region read. Full-frame pass
+   only on first frame / rotation / window move.
 2. Clip-rect occlusion for partial coverage, if the single-app case proves too
    limiting.
 
 ## Cost summary
 
-Per composited TE: one full-frame PXP pass (~8.8 ms SH2) plus the LCDIF send.
-Feasible to about 60 fps; heavier than dirty-region GDI refresh. The
-re-composite-on-change rule keeps a static desktop cheap.
+Per composited TE: one PXP pass over the compose region (window union GDI dirty)
+plus the LCDIF send, so cost scales with window size rather than a fixed
+full-frame ~8.8 ms. Static desktop plus a moving window stays cheap; the
+full-frame pass is reserved for first frame, rotation and window moves.
