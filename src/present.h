@@ -35,6 +35,7 @@ int brain_refresh_begin_present(const brain_present_source *source, uint32_t own
 void brain_refresh_end_present(void);
 int brain_refresh_presenting(void);
 int brain_refresh_capture_present(uint16_t *dest, int32_t width, int32_t height, int32_t stride_bytes);
+void brain_refresh_wait_capture(void);
 int brain_refresh_queue_present(uint32_t index, const uint32_t *overlays, uint32_t *replaced);
 int brain_refresh_wait_present(uint32_t index);
 int brain_refresh_wait_overlay(uint32_t overlay, uint32_t buffer);

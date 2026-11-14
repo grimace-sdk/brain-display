@@ -103,6 +103,7 @@ static HANDLE g_present_owner_handle;
 static uint32_t g_present_pending;
 static uint32_t g_present_reading;
 static uint32_t g_present_last_shown;
+static volatile LONG g_capture_busy;
 static uint32_t g_present_queued_us;
 static volatile LONG g_present_clear;
 static HANDLE g_present_done;
@@ -642,46 +643,72 @@ int brain_refresh_presenting(void) {
 
 /* Compose the last presented frame into a screen-space buffer so a GDI
    screenshot can be answered while present mode holds the primary. Frame only,
-   centred on the background, matching the panel minus overlays. Holds the
-   present lock so the source buffer cannot be freed mid-copy; a screenshot is
-   rare, so the brief stall of the present thread is acceptable. */
+   centred on the background, matching the panel minus overlays. The copy runs
+   without the present lock so it never stalls present; see the body. */
 int brain_refresh_capture_present(uint16_t *dest, int32_t width, int32_t height, int32_t stride_bytes) {
-    int ok = 0;
     if (dest == NULL || width <= 0 || height <= 0 || stride_bytes < width * 2) {
         return 0;
     }
     int32_t pitch = stride_bytes / 2;
+
+    const uint16_t *src = NULL;
+    int32_t pw = 0;
+    int32_t ph = 0;
+    uint16_t background = 0;
+
+    /* Grab the source and mark a capture in progress under the lock, then copy
+       unlocked. The app buffer is uncached, so the copy is slow; holding the
+       present lock across it would stall present. brain_refresh_wait_capture
+       keeps CLOSE from freeing the buffer mid-copy. */
     EnterCriticalSection(&g_present_lock);
     if (g_presenting && g_present_last_shown != BRAIN_PRESENT_NONE) {
-        const uint16_t *src = (const uint16_t *)g_present_source.kernel[g_present_last_shown];
-        int32_t pw = (int32_t)g_present_source.width;
-        int32_t ph = (int32_t)g_present_source.height;
-        uint16_t background = (uint16_t)g_present_source.background;
-        if (src != NULL && pw > 0 && ph > 0) {
-            for (int32_t y = 0; y < height; y++) {
-                uint16_t *row = dest + (size_t)y * pitch;
-                for (int32_t x = 0; x < width; x++) {
-                    row[x] = background;
-                }
-            }
-            int32_t left = (width - pw) / 2;
-            int32_t top = (height - ph) / 2;
-            if (left < 0) left = 0;
-            if (top < 0) top = 0;
-            int32_t copy_w = pw < width ? pw : width;
-            int32_t copy_h = ph < height ? ph : height;
-            for (int32_t y = 0; y < copy_h; y++) {
-                const uint16_t *src_row = src + (size_t)y * pw;
-                uint16_t *row = dest + (size_t)(top + y) * pitch + left;
-                for (int32_t x = 0; x < copy_w; x++) {
-                    row[x] = src_row[x];
-                }
-            }
-            ok = 1;
+        const uint16_t *buffer = (const uint16_t *)g_present_source.kernel[g_present_last_shown];
+        if (buffer != NULL && g_present_source.width > 0 && g_present_source.height > 0) {
+            src = buffer;
+            pw = (int32_t)g_present_source.width;
+            ph = (int32_t)g_present_source.height;
+            background = (uint16_t)g_present_source.background;
+            InterlockedExchange(&g_capture_busy, 1);
         }
     }
     LeaveCriticalSection(&g_present_lock);
-    return ok;
+
+    if (src == NULL) {
+        return 0;
+    }
+
+    for (int32_t y = 0; y < height; y++) {
+        uint16_t *row = dest + (size_t)y * pitch;
+        for (int32_t x = 0; x < width; x++) {
+            row[x] = background;
+        }
+    }
+    int32_t left = (width - pw) / 2;
+    int32_t top = (height - ph) / 2;
+    if (left < 0) left = 0;
+    if (top < 0) top = 0;
+    int32_t copy_w = pw < width ? pw : width;
+    int32_t copy_h = ph < height ? ph : height;
+    for (int32_t y = 0; y < copy_h; y++) {
+        const uint16_t *src_row = src + (size_t)y * pw;
+        uint16_t *row = dest + (size_t)(top + y) * pitch + left;
+        for (int32_t x = 0; x < copy_w; x++) {
+            row[x] = src_row[x];
+        }
+    }
+
+    InterlockedExchange(&g_capture_busy, 0);
+    return 1;
+}
+
+void brain_refresh_wait_capture(void) {
+    DWORD start = GetTickCount();
+    while (InterlockedCompareExchange(&g_capture_busy, 0, 0) != 0) {
+        if (GetTickCount() - start > 2000) {
+            break;
+        }
+        Sleep(1);
+    }
 }
 
 int brain_refresh_queue_present(uint32_t index, const uint32_t *overlays, uint32_t *replaced) {

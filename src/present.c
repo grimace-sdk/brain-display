@@ -116,6 +116,7 @@ static void free_one(HANDLE owner, void **kernel, void **user) {
 }
 
 static void free_buffers(HANDLE owner) {
+    brain_refresh_wait_capture();
     for (DWORD buffer = 0; buffer < BRAIN_PRESENT_MAX_BUFFERS; buffer++) {
         free_one(owner, &s_kernel[buffer], &s_user[buffer]);
         for (DWORD overlay = 0; overlay < BRAIN_PRESENT_MAX_OVERLAYS; overlay++) {
