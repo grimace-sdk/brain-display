@@ -51,6 +51,17 @@
 #define PANEL_GPIO_BANK0_MASK 0x0C000000u
 #define PANEL_GPIO_BANK1_MASK 0x00FF0000u
 
+/* Panel reset is GPIO 4_16, an active-low line EBOOT drives high in normal use
+   (panel-handoff.md). Deep sleep drops it low, holding the panel in reset, so a
+   deep-sleep resume needs a reset pulse and a full re-init. On the PW-SH2 this is
+   not the TE pin (TE is 3_30), so no TE coordination is needed. Bank 4: DOUT
+   0x740, DOE 0xB40, MUXSEL9 0x190 (pin 16 at shift 0, GPIO = mux 3). */
+#define PANEL_RESET_MUXSEL 0x190
+#define PANEL_RESET_DOUT   0x740
+#define PANEL_RESET_DOE    0xB40
+#define PANEL_RESET_BIT    0x00010000u
+#define PANEL_RESET_MUX_GPIO 0x3u
+
 #define REG_CTRL          0x000
 #define REG_CTRL_SET      0x004
 #define REG_CTRL_CLR      0x008
@@ -460,6 +471,67 @@ static void panel_gpio_restore(void) {
     brain_log("panel: resume panel GPIO restored");
 }
 
+#if defined(BRAIN_BOARD_pwsh2)
+/* Pulse the panel reset line (GPIO 4_16, active low) with EBOOT's timing. Deep
+   sleep leaves it low; drive it high, assert low, release high, 15 ms each. */
+static void panel_reset_pulse(void) {
+    if (g_pinctrl == NULL) {
+        return;
+    }
+    g_pinctrl[(PANEL_RESET_MUXSEL + PINCTRL_SET) / 4] = PANEL_RESET_MUX_GPIO;
+    g_pinctrl[(PANEL_RESET_DOE + PINCTRL_SET) / 4] = PANEL_RESET_BIT;
+    g_pinctrl[(PANEL_RESET_DOUT + PINCTRL_SET) / 4] = PANEL_RESET_BIT;
+    Sleep(15);
+    g_pinctrl[(PANEL_RESET_DOUT + PINCTRL_CLR) / 4] = PANEL_RESET_BIT;
+    Sleep(15);
+    g_pinctrl[(PANEL_RESET_DOUT + PINCTRL_SET) / 4] = PANEL_RESET_BIT;
+    Sleep(15);
+    brain_log("panel: resume reset pulse");
+}
+
+/* Full ILI9805 controller init, ported from the EBOOT bring-up in
+   panel-handoff.md (static analysis of Sharp's EBOOT, a user-approved source).
+   Used after a deep-sleep reset, when the panel has lost its configuration.
+   Window addressing and the frame follow from the refresh push, so CASET/PASET
+   and the boot splash are omitted. SLEEP_OUT and display on are sent by the
+   caller and the power handler, as on the normal resume path. */
+static void panel_ili9805_init(void) {
+    panel_command(0xFF); panel_param(0xFF); panel_param(0x98); panel_param(0x05);
+    panel_command(0xFD); panel_param(0x03); panel_param(0x13); panel_param(0x44); panel_param(0x00);
+    panel_command(0xF8);
+    panel_param(0x18); panel_param(0x02); panel_param(0x02); panel_param(0x18); panel_param(0x02);
+    panel_param(0x02); panel_param(0x30); panel_param(0x01); panel_param(0x01); panel_param(0x30);
+    panel_param(0x01); panel_param(0x01); panel_param(0x30); panel_param(0x01); panel_param(0x01);
+    panel_command(0xB8); panel_param(0x72);
+    panel_command(0xF1); panel_param(0x00);
+    panel_command(0xF2); panel_param(0x00); panel_param(0x58); panel_param(0x40);
+    panel_command(0xFC); panel_param(0x04); panel_param(0x0F); panel_param(0x01);
+    panel_command(0xEB); panel_param(0x08); panel_param(0x0F);
+    panel_command(0xE0);
+    panel_param(0x0A); panel_param(0x23); panel_param(0x35); panel_param(0x15); panel_param(0x13);
+    panel_param(0x16); panel_param(0x0A); panel_param(0x06); panel_param(0x03); panel_param(0x06);
+    panel_param(0x05); panel_param(0x0A); panel_param(0x08); panel_param(0x23); panel_param(0x1A);
+    panel_param(0x00);
+    panel_command(0xE1);
+    panel_param(0x0A); panel_param(0x23); panel_param(0x28); panel_param(0x10); panel_param(0x11);
+    panel_param(0x16); panel_param(0x0B); panel_param(0x0A); panel_param(0x02); panel_param(0x05);
+    panel_param(0x04); panel_param(0x0A); panel_param(0x08); panel_param(0x1D); panel_param(0x1A);
+    panel_param(0x00);
+    panel_command(0xC1); panel_param(0x13); panel_param(0x28); panel_param(0x08); panel_param(0x26);
+    panel_command(0xC7); panel_param(0x90);
+    panel_command(0xB1); panel_param(0x00); panel_param(0x12); panel_param(0x14);
+    panel_command(0xB4); panel_param(0x02);
+    panel_command(0xBB); panel_param(0x14); panel_param(0x55);
+    panel_command(DCS_MADCTL); panel_param(0x48);
+    panel_command(DCS_COLMOD); panel_param(0x55);
+    panel_command(0x21);
+    panel_command(0xB6); panel_param(0x01); panel_param(0x80); panel_param(0x8F);
+    panel_command(0x44); panel_param(0x00); panel_param(0x00);
+    panel_command(DCS_SET_TEAR_ON); panel_param(0x00);
+    brain_log("panel: resume ILI9805 init");
+}
+#endif
+
 void brain_panel_resume_prepare(void) {
     uint32_t ctrl = reg_read(REG_CTRL);
     brain_log("panel: resume enter");
@@ -479,11 +551,25 @@ void brain_panel_resume_prepare(void) {
     if (g_clkctrl != NULL) {
         clock_enable();
     }
+#if defined(BRAIN_BOARD_pwsh2)
+    if (ctrl & CTRL_SFTRST) {
+        brain_log("panel: resume full re-init");
+        panel_reset_pulse();
+        panel_ili9805_init();
+        panel_command(DCS_SLEEP_OUT);
+        Sleep(120);
+    } else {
+        brain_log("panel: resume SLEEP_OUT");
+        panel_command(DCS_SLEEP_OUT);
+        Sleep(120);
+        panel_configure();
+    }
+#else
     brain_log("panel: resume SLEEP_OUT");
     panel_command(DCS_SLEEP_OUT);
     Sleep(120);
-    brain_log("panel: resume configure");
     panel_configure();
+#endif
     brain_log_value("panel: resume done CTRL", reg_read(REG_CTRL));
     brain_log_value("panel: resume done STAT", reg_read(REG_STAT));
 }

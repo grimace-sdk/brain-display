@@ -42,6 +42,8 @@ Present mode only. On 2026-11-12 the user stated that the prior prototype's pres
 
 Scope is limited to the present-mode code. The rest of the prototype's display driver was built alongside Sharp's driver and NXP BSP material and stays off-limits: do not take its PXP, LCDIF, panel setup, recovery or rotation code beyond what has already been established on the device.
 
+Static analysis of Sharp's EBOOT (the bootloader), as written up in `pw-sh2/docs/research/panel-handoff.md`, is authorised as a source for the PW-SH2 panel bring-up: the LCD pin mux and control/power GPIO states, the reset pulse and its timings, and the ILI9805 controller init list, used for the deep-sleep panel re-init. The user accepted EBOOT's observed state plus the ILI9805 datasheet for this. EBOOT is a distinct binary from Sharp's display driver `ddraw_mx28.dll`, which stays off-limits.
+
 ## Registers
 
 Hardware register offsets and fields are from the public i.MX28 Reference Manual, with device measurement where the manual and the silicon disagree (noted in `docs/hardware.md`):
