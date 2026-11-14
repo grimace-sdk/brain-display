@@ -91,6 +91,8 @@ A transfer can stick: `RUN` stays set with the FIFOs empty and an underflow flag
 
 Save every LCDIF register at init and restore them on resume.
 
+Deep sleep (not a short sleep) resets the LCDIF block (CTRL comes back with `SFTRST` set, 0xC0000000) and parks the LCD pins to GPIO, so a plain register restore does not reach the panel and the screen stays white. On resume, when CTRL shows `SFTRST`, soft-reset the LCDIF before restoring its registers, and restore the LCD pin mux: `HW_PINCTRL_MUXSEL2` (0x80018120, bank 1 pins 0-15 = LCD_D0..D15) and the pins-24-27 field of `HW_PINCTRL_MUXSEL3` (0x80018130, RD_E/WR/RS/CS) back to function 0. The LCDIF function is mux 0, so clear those fields via the CLR register; it leaves the other MUXSEL3 pins alone and is a no-op after a short sleep. Masks are from the white-vs-good device reads (MUXSEL2 0xFFFFFFFF -> 0, MUXSEL3 0xFFFFFFFF -> 0xFF00FFFF) and confirmed by EBOOT's panel setup (it sets the same pins to function 0). Measured on the PW-SH2; the PW-A7300 pin set is unverified (plan.md M11).
+
 ## TE
 
 Use the TE pin as a GPIO interrupt: set its `PINCTRL` `IRQEN`, `IRQLEVEL` (edge) and `IRQPOL` bits for the edge in the table, clear `IRQSTAT`, and get a SYSINTR for it with `IOCTL_HAL_REQUEST_SYSINTR`. GPIO pins appear as OAL IRQ 128 + bank * 32 + pin. Each interrupt: clear `IRQSTAT` for the pin, then `InterruptDone`. Mask it while idle.
