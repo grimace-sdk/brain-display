@@ -14,7 +14,6 @@ typedef struct {
 
 typedef struct {
     uint32_t physical[BRAIN_PRESENT_MAX_BUFFERS];
-    void *kernel[BRAIN_PRESENT_MAX_BUFFERS];
     uint32_t buffers;
     uint32_t width;
     uint32_t height;
