@@ -40,21 +40,21 @@ uint32_t brain_night_light_schedule_strength(const brain_night_light_config *cfg
     return rising < falling ? rising : falling;
 }
 
-void brain_night_light_gains(uint32_t strength, uint32_t warm_green, uint32_t warm_blue,
-                             uint32_t *green_gain, uint32_t *blue_gain) {
+uint32_t brain_night_light_gain(uint32_t strength, uint32_t neutral, uint32_t warm) {
     strength = clamp_strength(strength);
-    if (warm_green > BRAIN_NIGHT_GAIN_MAX) {
-        warm_green = BRAIN_NIGHT_GAIN_MAX;
+    if (neutral > BRAIN_NIGHT_GAIN_MAX) {
+        neutral = BRAIN_NIGHT_GAIN_MAX;
     }
-    if (warm_blue > BRAIN_NIGHT_GAIN_MAX) {
-        warm_blue = BRAIN_NIGHT_GAIN_MAX;
+    if (warm > BRAIN_NIGHT_GAIN_MAX) {
+        warm = BRAIN_NIGHT_GAIN_MAX;
     }
 
-    int32_t green = (int32_t)BRAIN_NIGHT_GAIN_MAX +
-                    ((int32_t)warm_green - (int32_t)BRAIN_NIGHT_GAIN_MAX) * (int32_t)strength / 100;
-    int32_t blue = (int32_t)BRAIN_NIGHT_GAIN_MAX +
-                   ((int32_t)warm_blue - (int32_t)BRAIN_NIGHT_GAIN_MAX) * (int32_t)strength / 100;
-
-    *green_gain = (uint32_t)green;
-    *blue_gain = (uint32_t)blue;
+    int32_t gain = (int32_t)neutral + ((int32_t)warm - (int32_t)neutral) * (int32_t)strength / 100;
+    if (gain < 0) {
+        gain = 0;
+    }
+    if (gain > (int32_t)BRAIN_NIGHT_GAIN_MAX) {
+        gain = BRAIN_NIGHT_GAIN_MAX;
+    }
+    return (uint32_t)gain;
 }

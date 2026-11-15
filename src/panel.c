@@ -9,6 +9,7 @@
 #include "board.h"
 #include "panel.h"
 #include "irq.h"
+#include "nightlight.h"
 #include "log.h"
 
 #define LCDIF_IRQ 38
@@ -678,37 +679,40 @@ void brain_panel_display_on(void) {
  *
  * PW-A7300: the panel's per-colour gamma tables are E2/E3 (green) and E4/E5
  * (blue), each a command plus nine data bytes, the two drive polarities of a
- * colour. Data byte 1 (offset 2 below) is the 6-bit gain; set it from the
- * computed value and resend both polarities of a colour together. The table
- * contents are the panel's own gamma, from our colourtune gamma tool.
+ * colour. Data byte 1 (offset 2) is the 6-bit gain. It interpolates from each
+ * table's own factory gain (green 0x29, blue 0x2A) at strength 0 down to the warm
+ * value at strength 100, so strength 0 resends the factory tables unchanged.
+ * Both polarities of a colour are resent together. The table contents are the
+ * panel's own gamma, from EBOOT (panel-handoff.md).
  *
  * PW-SH2 (ILI9805): no-op. The ILI9805 has no per-colour gamma stage (probed on
  * device, see docs/plan.md M10), so night light is not offered on the SH2 - the
  * escape is not advertised there and this does nothing.
  */
 #if defined(BRAIN_BOARD_pwa7300)
-static void send_gamma_table(const uint8_t *table, uint32_t gain) {
+static void send_gamma_table(const uint8_t *table, uint32_t strength, uint32_t warm) {
+    uint32_t gain = brain_night_light_gain(strength, table[2], warm);
     panel_command(table[0]);
     for (int i = 1; i < 10; i++) {
-        panel_param(i == 2 ? (gain & 0x3Fu) : table[i]);
+        panel_param(i == 2 ? gain : table[i]);
     }
 }
 
-void brain_panel_night_light(uint32_t green_gain, uint32_t blue_gain) {
+void brain_panel_night_light(uint32_t strength, uint32_t warm_green, uint32_t warm_blue) {
     static const uint8_t green_even[10] = {0xE2, 0x24, 0x29, 0x14, 0x1C, 0x67, 0xDD, 0xDD, 0x97, 0x0B};
     static const uint8_t green_odd[10]  = {0xE3, 0x24, 0x29, 0x14, 0x1C, 0x67, 0xDD, 0xDD, 0x97, 0x0A};
     static const uint8_t blue_even[10]  = {0xE4, 0x24, 0x2A, 0x15, 0x1A, 0x99, 0xDD, 0xED, 0xA6, 0x09};
     static const uint8_t blue_odd[10]   = {0xE5, 0x24, 0x2A, 0x15, 0x1A, 0x88, 0xDD, 0xDD, 0x97, 0x0C};
-    brain_log_value("night: green gain", green_gain);
-    brain_log_value("night: blue gain", blue_gain);
-    send_gamma_table(green_even, green_gain);
-    send_gamma_table(green_odd, green_gain);
-    send_gamma_table(blue_even, blue_gain);
-    send_gamma_table(blue_odd, blue_gain);
+    brain_log_value("night: strength", strength);
+    send_gamma_table(green_even, strength, warm_green);
+    send_gamma_table(green_odd, strength, warm_green);
+    send_gamma_table(blue_even, strength, warm_blue);
+    send_gamma_table(blue_odd, strength, warm_blue);
 }
 #else
-void brain_panel_night_light(uint32_t green_gain, uint32_t blue_gain) {
-    (void)green_gain;
-    (void)blue_gain;
+void brain_panel_night_light(uint32_t strength, uint32_t warm_green, uint32_t warm_blue) {
+    (void)strength;
+    (void)warm_green;
+    (void)warm_blue;
 }
 #endif

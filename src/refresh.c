@@ -71,8 +71,10 @@ static volatile LONG g_night_preview_active;
 static volatile LONG g_night_preview_strength;
 static volatile LONG g_night_dirty;
 static DWORD g_night_next;
-static uint32_t g_night_last_green = 0xFFFFFFFFu;
-static uint32_t g_night_last_blue = 0xFFFFFFFFu;
+static int g_night_activated;
+static uint32_t g_night_last_strength = 0xFFFFFFFFu;
+static uint32_t g_night_last_warm_green = 0xFFFFFFFFu;
+static uint32_t g_night_last_warm_blue = 0xFFFFFFFFu;
 
 static DWORD g_panel_escapes;
 #define BRAIN_PANEL_CMD_MAX 64
@@ -1097,9 +1099,8 @@ void brain_refresh_push_full(void) {
 void brain_refresh_resume(void) {
     g_paused = 0;
     /* A deep-sleep resume may have re-initialised the panel to default gamma, so
-       force the next tick to re-apply night light. */
-    g_night_last_green = 0xFFFFFFFFu;
-    g_night_last_blue = 0xFFFFFFFFu;
+       force the next tick to re-apply night light (only if it was ever active). */
+    g_night_last_strength = 0xFFFFFFFFu;
     brain_refresh_mark_dirty(0, 0, g_width, g_height);
 }
 
@@ -1197,12 +1198,20 @@ static void night_light_tick(void) {
         strength = brain_night_light_schedule_strength(&g_night_cfg, minutes);
     }
 
-    uint32_t green, blue;
-    brain_night_light_gains(strength, g_night_cfg.warm_green, g_night_cfg.warm_blue, &green, &blue);
-    if (green != g_night_last_green || blue != g_night_last_blue) {
-        g_night_last_green = green;
-        g_night_last_blue = blue;
-        brain_panel_night_light(green, blue);
+    if (strength > 0) {
+        g_night_activated = 1;
+    }
+    /* Never on since boot: leave the panel's factory gamma untouched. */
+    if (!g_night_activated) {
+        return;
+    }
+
+    if (strength != g_night_last_strength || g_night_cfg.warm_green != g_night_last_warm_green ||
+        g_night_cfg.warm_blue != g_night_last_warm_blue) {
+        g_night_last_strength = strength;
+        g_night_last_warm_green = g_night_cfg.warm_green;
+        g_night_last_warm_blue = g_night_cfg.warm_blue;
+        brain_panel_night_light(strength, g_night_cfg.warm_green, g_night_cfg.warm_blue);
     }
 }
 

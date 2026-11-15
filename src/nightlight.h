@@ -29,11 +29,11 @@ typedef struct {
 uint32_t brain_night_light_schedule_strength(const brain_night_light_config *cfg, uint32_t now_min);
 
 /*
- * Map an effective strength to per-channel 6-bit gains, interpolating from
- * neutral (BRAIN_NIGHT_GAIN_MAX, no warmth) to warm_green/warm_blue at 100.
- * Red stays at maximum; warming pulls green and blue down.
+ * One channel's 6-bit gamma gain for an effective strength, interpolating from
+ * the channel's factory neutral (strength 0) down to its warm value (strength
+ * 100). Neutral is each gamma table's own factory gain, not a fixed maximum, so
+ * strength 0 leaves the panel untouched.
  */
-void brain_night_light_gains(uint32_t strength, uint32_t warm_green, uint32_t warm_blue,
-                             uint32_t *green_gain, uint32_t *blue_gain);
+uint32_t brain_night_light_gain(uint32_t strength, uint32_t neutral, uint32_t warm);
 
 #endif

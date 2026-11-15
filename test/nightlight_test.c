@@ -14,13 +14,12 @@ static void check_strength(const char *name, const brain_night_light_config *cfg
     }
 }
 
-static void check_gains(const char *name, uint32_t strength, uint32_t wg, uint32_t wb,
-                        uint32_t expect_g, uint32_t expect_b) {
-    uint32_t g = 0, b = 0;
-    brain_night_light_gains(strength, wg, wb, &g, &b);
-    if (g != expect_g || b != expect_b) {
-        printf("FAIL %s: strength=%u expected g=%u b=%u got g=%u b=%u\n",
-               name, strength, expect_g, expect_b, g, b);
+static void check_gain(const char *name, uint32_t strength, uint32_t neutral, uint32_t warm,
+                       uint32_t expect) {
+    uint32_t got = brain_night_light_gain(strength, neutral, warm);
+    if (got != expect) {
+        printf("FAIL %s: strength=%u neutral=%u warm=%u expected=%u got=%u\n",
+               name, strength, neutral, warm, expect, got);
         failures++;
     }
 }
@@ -57,11 +56,14 @@ int main(void) {
     brain_night_light_config narrow = {1, 1200, 1240, 30, 100, 0x18, 0x00};
     check_strength("narrow-peak", &narrow, 1220, 66);
 
-    /* Gains: neutral at 0, warm at 100, interpolated between. */
-    check_gains("gain-off", 0, 0x18, 0x00, 0x3F, 0x3F);
-    check_gains("gain-full", 100, 0x18, 0x00, 0x18, 0x00);
-    check_gains("gain-half", 50, 0x18, 0x00, 0x2C, 0x20);
-    check_gains("gain-clamp", 200, 0x18, 0x00, 0x18, 0x00);
+    /* Gain: the table's factory neutral at strength 0, warm at 100, between. */
+    check_gain("gain-green-off", 0, 0x29, 0x18, 0x29);
+    check_gain("gain-green-full", 100, 0x29, 0x18, 0x18);
+    check_gain("gain-green-half", 50, 0x29, 0x18, 0x21);
+    check_gain("gain-blue-off", 0, 0x2A, 0x00, 0x2A);
+    check_gain("gain-blue-full", 100, 0x2A, 0x00, 0x00);
+    check_gain("gain-blue-half", 50, 0x2A, 0x00, 0x15);
+    check_gain("gain-clamp", 200, 0x29, 0x18, 0x18);
 
     if (failures) {
         printf("%d failure(s)\n", failures);
