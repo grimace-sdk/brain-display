@@ -127,6 +127,13 @@ void brain_log(const char *message) {
     emit(message);
 }
 
+/* Buffer a line to memory only, never touching the debug UART or the file. Safe
+   to call from the power-off handler, where OutputDebugString and file I/O yield
+   the boosted handler thread and trip the kernel's power-handler guard. */
+void brain_log_buffered(const char *message) {
+    buffer_line(message);
+}
+
 void brain_log_debug(const char *message) {
     if (brain_log_debug_enabled) {
         emit_debug(message);

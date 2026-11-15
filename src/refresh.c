@@ -1080,7 +1080,6 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
 
 void brain_refresh_suspend(void) {
     g_paused = 1;
-    Sleep(150);
 }
 
 void brain_refresh_push_full(void) {

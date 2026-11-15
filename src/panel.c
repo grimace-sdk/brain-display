@@ -436,14 +436,10 @@ static void panel_configure(void) {
 }
 
 void brain_panel_suspend(void) {
-    brain_log("panel: suspend enter");
-    brain_log_value("panel: suspend CTRL", reg_read(REG_CTRL));
-    brain_log_value("panel: suspend STAT", reg_read(REG_STAT));
-    brain_log("panel: suspend DISPLAY_OFF");
+    brain_log_buffered("panel: suspend enter");
     panel_command(DCS_DISPLAY_OFF);
-    brain_log("panel: suspend SLEEP_IN");
     panel_command(DCS_SLEEP_IN);
-    brain_log("panel: suspend done");
+    brain_log_buffered("panel: suspend done");
 }
 
 /*

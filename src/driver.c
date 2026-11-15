@@ -1121,11 +1121,10 @@ static VOID APIENTRY brain_PowerHandler(DHPDEV dhpdev, BOOL off) {
     (void)dhpdev;
     if (off) {
         brain_log_set_suspended(1);
-        brain_log("PowerHandler: suspend enter");
+        brain_log_buffered("PowerHandler: suspend enter");
         brain_refresh_suspend();
-        brain_log("PowerHandler: suspend thread paused");
         brain_panel_suspend();
-        brain_log("PowerHandler: suspend done");
+        brain_log_buffered("PowerHandler: suspend done");
     } else {
         brain_log("PowerHandler: resume enter");
         brain_panel_resume_prepare();
