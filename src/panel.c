@@ -597,14 +597,38 @@ void brain_panel_display_on(void) {
  * strength maths are board-independent (nightlight.c); only the register write
  * differs per panel. The gain values are 6-bit, red held at maximum.
  *
- * The register write is pending measured data: the A7300 needs the full E2-E5
- * gamma command parameter arrays to set byte 1 and resend each command, and the
- * ILI9805 needs a per-colour gain register identified from its datasheet (its
- * EBOOT init exposes only whole-panel gamma E0/E1). Both are open questions in
- * docs/plan.md. Until then this logs the computed gains so the schedule can be
- * validated on device.
+ * PW-A7300: the panel's per-colour gamma tables are E2/E3 (green) and E4/E5
+ * (blue), each a command plus nine data bytes, the two drive polarities of a
+ * colour. Data byte 1 (offset 2 below) is the 6-bit gain; set it from the
+ * computed value and resend both polarities of a colour together. The table
+ * contents are the panel's own gamma, from our colourtune gamma tool.
+ *
+ * PW-SH2 (ILI9805): still log-only; its per-colour gamma register is not yet
+ * identified. See docs/plan.md M10.
  */
+#if defined(BRAIN_BOARD_pwa7300)
+static void send_gamma_table(const uint8_t *table, uint32_t gain) {
+    panel_command(table[0]);
+    for (int i = 1; i < 10; i++) {
+        panel_param(i == 2 ? (gain & 0x3Fu) : table[i]);
+    }
+}
+
+void brain_panel_night_light(uint32_t green_gain, uint32_t blue_gain) {
+    static const uint8_t green_even[10] = {0xE2, 0x24, 0x29, 0x14, 0x1C, 0x67, 0xDD, 0xDD, 0x97, 0x0B};
+    static const uint8_t green_odd[10]  = {0xE3, 0x24, 0x29, 0x14, 0x1C, 0x67, 0xDD, 0xDD, 0x97, 0x0A};
+    static const uint8_t blue_even[10]  = {0xE4, 0x24, 0x2A, 0x15, 0x1A, 0x99, 0xDD, 0xED, 0xA6, 0x09};
+    static const uint8_t blue_odd[10]   = {0xE5, 0x24, 0x2A, 0x15, 0x1A, 0x88, 0xDD, 0xDD, 0x97, 0x0C};
+    brain_log_value("night: green gain", green_gain);
+    brain_log_value("night: blue gain", blue_gain);
+    send_gamma_table(green_even, green_gain);
+    send_gamma_table(green_odd, green_gain);
+    send_gamma_table(blue_even, blue_gain);
+    send_gamma_table(blue_odd, blue_gain);
+}
+#else
 void brain_panel_night_light(uint32_t green_gain, uint32_t blue_gain) {
     brain_log_value("night: green gain", green_gain);
     brain_log_value("night: blue gain", blue_gain);
 }
+#endif
