@@ -515,6 +515,25 @@ static int dmdo_to_angle(ULONG dmdo) {
     }
 }
 
+/* Publish the primary framebuffer's location to HKLM\Software\Brain\Display so a
+   board-driver screenshot path can find it without going through GDI: physical
+   address, RGB565, width and height in pixels (stride is width*2). Written at
+   EnableSurface and refreshed when rotation swaps the dimensions. */
+static void publish_framebuffer_info(brain_pdev *pdev) {
+    HKEY key;
+    if (RegCreateKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Brain\\Display", 0, NULL, 0,
+                        KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) {
+        return;
+    }
+    DWORD physical = pdev->framebuffer_physical;
+    DWORD width = (DWORD)pdev->width;
+    DWORD height = (DWORD)pdev->height;
+    RegSetValueExW(key, L"FramebufferPhysical", 0, REG_DWORD, (const BYTE *)&physical, sizeof(physical));
+    RegSetValueExW(key, L"FramebufferWidth", 0, REG_DWORD, (const BYTE *)&width, sizeof(width));
+    RegSetValueExW(key, L"FramebufferHeight", 0, REG_DWORD, (const BYTE *)&height, sizeof(height));
+    RegCloseKey(key);
+}
+
 static DHPDEV APIENTRY brain_EnablePDEV(DEVMODEW *pdm, LPWSTR log_address, ULONG pat_count, HSURF *patterns,
                                         ULONG caps_size, ULONG *devcaps, ULONG devinfo_size, DEVINFO *devinfo,
                                         HDEV hdev, LPWSTR device_name, HANDLE driver) {
@@ -557,6 +576,7 @@ static DHPDEV APIENTRY brain_EnablePDEV(DEVMODEW *pdm, LPWSTR log_address, ULONG
     }
     if (reentry) {
         brain_refresh_set_rotation(dmdo_to_angle(pdev.orientation), pdev.width, pdev.height, pdev.stride);
+        publish_framebuffer_info(&pdev);
     }
     brain_log_value("EnablePDEV: return", (unsigned long)&pdev);
     return (DHPDEV)&pdev;
@@ -631,6 +651,7 @@ static HSURF APIENTRY brain_EnableSurface(DHPDEV dhpdev) {
                              pdev->width, pdev->height, pdev->stride)) {
         brain_log("EnableSurface: refresh start failed");
     }
+    publish_framebuffer_info(pdev);
     brain_log("EnableSurface: done");
     return pdev->primary_surface;
 }
