@@ -13,10 +13,12 @@ The primary target is the PW-SH2. The PW-A7300 shares the code and builds; its d
 
 ## Known limitations
 
+- Night light: the schedule, registry settings and the preview escape are implemented, but the panel colour change itself is not applied yet, on either board.
 - `imagelist` colour-to-mono masks and the polygon fill rule have minor differences from the replaced driver (open).
 - Anti-aliased text and some edges differ from Sharp by a least-significant bit, by design (the driver keeps its own rounding).
-- Night light is not implemented yet on either board (the PW-A7300 applet's escape is unhandled).
-- Present mode serves one process at a time and does not rotate while an app presents.
+- Present mode serves one process at a time and does not rotate while an app presents. A screenshot taken while an app is presenting briefly slows that app.
+- Rotation shows a brief black flash during the transition.
+- The PW-A7300's deep-sleep resume and panel restore are untested on that board.
 
 ## Performance
 
