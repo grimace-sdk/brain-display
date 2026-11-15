@@ -11,7 +11,7 @@ jobs:
       run:
         shell: bash
     env:
-      GRIMACE_REF: "13e9240"
+      GRIMACE_REF: "13e92404b5b12427e06efed7cdede225513acba1"
       GRIMACE_LLVM_RELEASE: "v4"
     steps:
       - uses: actions/checkout@v7
