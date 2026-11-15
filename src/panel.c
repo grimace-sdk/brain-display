@@ -591,6 +591,7 @@ static void panel_a7300_init(void) {
    CTRL1 RESET with EBOOT's timing, re-send the init, sleep out and apply
    brain-display's MADCTL/COLMOD/TE. The caller sends display-on and the frame. */
 static void panel_a7300_reinit(void) {
+    brain_log("panel: a7300 reinit power");
     if (g_pinctrl != NULL) {
         g_pinctrl[(PINCTRL_DOUT + PINCTRL_SET) / 4] = 0x04000000u;
         Sleep(15);
@@ -598,6 +599,7 @@ static void panel_a7300_reinit(void) {
         Sleep(15);
         g_pinctrl[(PINCTRL_MUXSEL7 + PINCTRL_CLR) / 4] = A7300_RESET_MUX_MASK;
     }
+    brain_log("panel: a7300 reinit reset pulse");
     reg_write(REG_CTRL1_SET, CTRL1_RESET);
     Sleep(15);
     reg_write(REG_CTRL1_CLR, CTRL1_RESET);
@@ -605,12 +607,14 @@ static void panel_a7300_reinit(void) {
     reg_write(REG_CTRL1_SET, CTRL1_RESET);
     Sleep(45);
     panel_a7300_init();
+    brain_log("panel: a7300 reinit sleep out");
     panel_command(DCS_SLEEP_OUT);
     Sleep(100);
     panel_command(0xDE);
     panel_param(0x11);
     panel_param(0x04);
     panel_configure();
+    brain_log("panel: a7300 reinit done");
 }
 #endif
 
