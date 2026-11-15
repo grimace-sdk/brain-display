@@ -126,6 +126,7 @@ static void panel_ili9805_init(void);
 #endif
 #if defined(BRAIN_BOARD_pwa7300)
 static void panel_a7300_init(void);
+static void panel_a7300_reinit(void);
 #endif
 
 static volatile uint32_t *g_lcdif;
@@ -366,9 +367,7 @@ void brain_panel_recover(uint32_t level) {
         Sleep(120);
         panel_command(DCS_DISPLAY_ON);
 #else
-        panel_command(DCS_SLEEP_OUT);
-        Sleep(120);
-        panel_configure();
+        panel_a7300_reinit();
         panel_command(DCS_DISPLAY_ON);
 #endif
     }
@@ -585,6 +584,33 @@ static void panel_a7300_init(void) {
     panel_command(0xE5); panel_param(0x24); panel_param(0x2A); panel_param(0x15); panel_param(0x1A); panel_param(0x88); panel_param(0xDD); panel_param(0xDD); panel_param(0x97); panel_param(0x0C);
     brain_log("panel: resume A7300 init");
 }
+
+/* Full PW-A7300 panel bring-up, for a deep-sleep resume or an L3 recovery: assert
+   panel power, hand the LCD_RESET pad (3_30) back to the LCDIF (mux 0), pulse
+   CTRL1 RESET with EBOOT's timing, re-send the init, sleep out and apply
+   brain-display's MADCTL/COLMOD/TE. The caller sends display-on and the frame. */
+static void panel_a7300_reinit(void) {
+    if (g_pinctrl != NULL) {
+        g_pinctrl[(PINCTRL_DOUT + PINCTRL_SET) / 4] = 0x04000000u;
+        Sleep(15);
+        g_pinctrl[(PINCTRL_DOUT + PINCTRL_SET) / 4] = 0x08000000u;
+        Sleep(15);
+        g_pinctrl[(PINCTRL_MUXSEL7 + PINCTRL_CLR) / 4] = A7300_RESET_MUX_MASK;
+    }
+    reg_write(REG_CTRL1_SET, CTRL1_RESET);
+    Sleep(15);
+    reg_write(REG_CTRL1_CLR, CTRL1_RESET);
+    Sleep(15);
+    reg_write(REG_CTRL1_SET, CTRL1_RESET);
+    Sleep(45);
+    panel_a7300_init();
+    panel_command(DCS_SLEEP_OUT);
+    Sleep(100);
+    panel_command(0xDE);
+    panel_param(0x11);
+    panel_param(0x04);
+    panel_configure();
+}
 #endif
 
 void brain_panel_resume_prepare(void) {
@@ -624,30 +650,9 @@ void brain_panel_resume_prepare(void) {
         uint32_t muxsel7 = (g_pinctrl != NULL) ? g_pinctrl[PINCTRL_MUXSEL7 / 4] : 0;
         if ((muxsel7 & A7300_RESET_MUX_MASK) == A7300_RESET_MUX_MASK) {
             /* Deep sleep muxed the LCD_RESET pad (3_30) to GPIO, which held the
-               panel in reset and lost its registers. Re-assert panel power, hand
-               the reset line back to the LCDIF (mux 0), pulse CTRL1 RESET per
-               EBOOT's timing, then re-send the full init. */
+               panel in reset and lost its registers. Do the full bring-up. */
             brain_log("panel: resume A7300 full re-init");
-            if (g_pinctrl != NULL) {
-                g_pinctrl[(PINCTRL_DOUT + PINCTRL_SET) / 4] = 0x04000000u;
-                Sleep(15);
-                g_pinctrl[(PINCTRL_DOUT + PINCTRL_SET) / 4] = 0x08000000u;
-                Sleep(15);
-                g_pinctrl[(PINCTRL_MUXSEL7 + PINCTRL_CLR) / 4] = A7300_RESET_MUX_MASK;
-            }
-            reg_write(REG_CTRL1_SET, CTRL1_RESET);
-            Sleep(15);
-            reg_write(REG_CTRL1_CLR, CTRL1_RESET);
-            Sleep(15);
-            reg_write(REG_CTRL1_SET, CTRL1_RESET);
-            Sleep(45);
-            panel_a7300_init();
-            panel_command(DCS_SLEEP_OUT);
-            Sleep(100);
-            panel_command(0xDE);
-            panel_param(0x11);
-            panel_param(0x04);
-            panel_configure();
+            panel_a7300_reinit();
         } else {
             brain_log("panel: resume SLEEP_OUT");
             panel_command(DCS_SLEEP_OUT);
