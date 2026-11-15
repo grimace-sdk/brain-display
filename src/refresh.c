@@ -1155,6 +1155,7 @@ static void read_settle_config(void) {
         g_te_offset_us = read_reg_dword(key, L"TeOffsetUs", 0);
         g_log_enabled = read_reg_dword(key, L"Log", 0);
         g_panel_escapes = read_reg_dword(key, L"PanelEscapes", 0);
+        brain_pxp_set_flip_override(read_reg_dword(key, L"PxpFlip", 0xFFFFFFFF));
         RegCloseKey(key);
     }
     brain_log_set_debug((int)g_log_enabled);

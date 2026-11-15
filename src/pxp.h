@@ -32,5 +32,6 @@ int brain_pxp_transpose_overlays(uint32_t src_phys, int32_t src_stride_px,
                                  const raster_rect *rect, uint32_t dst_phys, int angle, int mirror,
                                  const brain_pxp_overlay_set *overlays);
 void brain_pxp_path_counts(uint32_t *irq, uint32_t *spin);
+void brain_pxp_set_flip_override(uint32_t value);
 
 #endif

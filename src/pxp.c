@@ -42,19 +42,40 @@
 #define CTRL_ROTATE_180   (0x2u << 8)
 #define CTRL_ROTATE_270   (0x3u << 8)
 
+#define PXP_FLIP_OVERRIDE_OFF 0xFFFFFFFFu
+static uint32_t g_flip_override = PXP_FLIP_OVERRIDE_OFF;
+
+/* Test knob: force the flip bits for every angle (bit 0 = HFLIP, bit 1 = VFLIP),
+   so the correct rotate/flip per angle can be found on the device. Off by
+   default; values above 3 disable it. */
+void brain_pxp_set_flip_override(uint32_t value) {
+    g_flip_override = value;
+}
+
 /* PXP rotate/flip per (angle, mirror) to reproduce the CPU compose mapping.
-   Angle 0 is device-confirmed (SH2 ROTATE_90; A7300 ROTATE_90+VFLIP).
-   90/180/270 are derived from panel_to_frame and tuned on device. */
+   The rotate is shared by both boards; the mirror term corrects the A7300, which
+   runs the panel without a MADCTL row/column exchange (mirror_columns 0). Angle 0
+   is device-confirmed (SH2 ROTATE_90; A7300 ROTATE_90+VFLIP). The A7300's 90/180/
+   270 flips were tuned on the SH2 and are being re-tuned on the A7300 (180 showed
+   a horizontal mirror); use the flip override to find them. */
 static uint32_t pxp_angle_ctrl(int angle, int mirror) {
+    uint32_t rotate = angle == 1 ? CTRL_ROTATE_0
+                    : angle == 2 ? CTRL_ROTATE_270
+                    : angle == 3 ? CTRL_ROTATE_180
+                                 : CTRL_ROTATE_90;
+    if (g_flip_override <= 3u) {
+        return rotate | ((g_flip_override & 1u) ? CTRL_HFLIP : 0u)
+                      | ((g_flip_override & 2u) ? CTRL_VFLIP : 0u);
+    }
     switch (angle) {
     case 1:
-        return CTRL_ROTATE_0 | (mirror ? 0u : CTRL_HFLIP);
+        return rotate | (mirror ? 0u : CTRL_HFLIP);
     case 2:
-        return CTRL_ROTATE_270 | (mirror ? 0u : (CTRL_VFLIP | CTRL_HFLIP));
+        return rotate | (mirror ? 0u : (CTRL_VFLIP | CTRL_HFLIP));
     case 3:
-        return CTRL_ROTATE_180;
+        return rotate;
     default:
-        return CTRL_ROTATE_90 | (mirror ? 0u : CTRL_VFLIP);
+        return rotate | (mirror ? 0u : CTRL_VFLIP);
     }
 }
 

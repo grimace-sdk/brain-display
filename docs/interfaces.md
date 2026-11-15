@@ -55,6 +55,7 @@ All under `HKLM\Software\Brain\Display`, all DWORD. The refresh thread re-reads 
 | `TeOffsetUs` | 0 | Non-zero overrides `TeOffsetMs` with a QPC-spun sub-millisecond offset. Test knob for the tear sweep; leave 0 in production. | Live |
 | `Snapshot` | 1 | 1 holds a draw lock across the flush and PXP so a frame is tear-free; 0 drops the lock for raw throughput. | Live |
 | `Log` | 0 | 1 emits per-second refresh stats and enables `OutputDebugString`; 0 is silent apart from one-shot init and anomaly lines, which are still batched to the SD log. Debug output blocks on the debug UART, so keep it 0 for timing. | Live |
+| `PxpFlip` | absent | Test knob for tuning the per-angle PXP rotate/flip on a board. 0-3 forces the flip bits for every angle (bit 0 HFLIP, bit 1 VFLIP); absent or above 3 uses the built-in per-angle mapping. Leave unset in production. | Live |
 
 The driver also writes `Orientation` (the DMDO rotation value, read by the rotate applet and `autorotate`) and counters for stuck transfers and TE timeouts under the same key. `PanelEscapes` (DWORD, non-zero) enables escapes 100153 and 100154.
 
