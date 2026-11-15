@@ -26,14 +26,14 @@ If something you need is only in one of these, write it down as a question in `d
 
 ## Exceptions
 
-Specific constants the user has accepted as non-protectable platform interface facts, despite their source, because re-deriving them cleanly was judged not worth the effort:
+Specific constants we have accepted as non-protectable platform interface facts, despite their source, because re-deriving them cleanly was judged not worth the effort:
 
 - `IOCTL_HAL_REQUEST_SYSINTR` = 0x01010098 (function 38) and the GPIO OAL IRQ numbering 128 + bank * 32 + pin (254 for the PW-SH2 TE pin, 272 for the PW-A7300 TE pin). Obtained from Platform Builder's `pkfuncs.h` and NXP's `mx28_irq.h` by the measurement session (outside the clean room). Confirmed working on the PW-SH2. See docs/plan.md M9.
 - `CACHE_SYNC_WRITEBACK` = 0x004, the `CacheRangeFlush` flag used to clean the cached primary framebuffer's dirty range to DRAM before the PXP reads it. From Platform Builder's `pkfuncs.h`; the flag name is public (MSDN `CacheSync`/`CacheRangeFlush`) but its value is not. Accepted as a platform interface constant to enable the cached primary (a performance win for read-heavy cases).
 
 ## Authorised sources
 
-Present mode only. On 2026-11-12 the user stated that the prior prototype's present-mode implementation was the project's own addition, written independently of Sharp's driver and NXP's BSP, and authorised it as a reference for implementing present mode here:
+Present mode only. On 2026-11-12 we established that the prior prototype's present-mode implementation was the project's own addition, written independently of Sharp's driver and NXP's BSP, and authorised it as a reference for implementing present mode here:
 
 - the prototype's `panel_present.cpp`
 - its `brain_present.h` (matches our `abi/brain_present.h`)
@@ -42,7 +42,7 @@ Present mode only. On 2026-11-12 the user stated that the prior prototype's pres
 
 Scope is limited to the present-mode code. The rest of the prototype's display driver was built alongside Sharp's driver and NXP BSP material and stays off-limits: do not take its PXP, LCDIF, panel setup, recovery or rotation code beyond what has already been established on the device.
 
-Static analysis of Sharp's EBOOT (the bootloader), as written up in `pw-sh2/docs/research/panel-handoff.md`, is authorised as a source for the PW-SH2 panel bring-up: the LCD pin mux and control/power GPIO states, the reset pulse and its timings, and the ILI9805 controller init list, used for the deep-sleep panel re-init. The user accepted EBOOT's observed state plus the ILI9805 datasheet for this. EBOOT is a distinct binary from Sharp's display driver `ddraw_mx28.dll`, which stays off-limits.
+Static analysis of Sharp's EBOOT (the bootloader), as written up in `pw-sh2/docs/research/panel-handoff.md`, is authorised as a source for the PW-SH2 panel bring-up: the LCD pin mux and control/power GPIO states, the reset pulse and its timings, and the ILI9805 controller init list, used for the deep-sleep panel re-init. We accepted EBOOT's observed state plus the ILI9805 datasheet for this. EBOOT is a distinct binary from Sharp's display driver `ddraw_mx28.dll`, which stays off-limits.
 
 ## Registers
 
