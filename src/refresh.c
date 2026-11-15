@@ -1096,6 +1096,10 @@ void brain_refresh_push_full(void) {
 
 void brain_refresh_resume(void) {
     g_paused = 0;
+    /* A deep-sleep resume may have re-initialised the panel to default gamma, so
+       force the next tick to re-apply night light. */
+    g_night_last_green = 0xFFFFFFFFu;
+    g_night_last_blue = 0xFFFFFFFFu;
     brain_refresh_mark_dirty(0, 0, g_width, g_height);
 }
 

@@ -55,9 +55,10 @@ Two narrow exceptions to "not used":
   mode here. That is limited to present mode; the rest of the prototype stays
   off-limits.
 - Static analysis of the device's bootloader (a distinct binary from the display
-  driver) is used for the PW-SH2 panel bring-up: the LCD pin mux and control and
-  power GPIO states, the panel reset timing, and the ILI9805 controller init
-  sequence, for restoring the panel after deep sleep. The ILI9805 datasheet backs
+  driver) is used for the panel bring-up on both boards: the LCD pin mux, control
+  and power GPIO states, the panel reset sequence and timing, and the controller
+  init sequence, for restoring the panel after deep sleep. These are the panel's
+  own register values, a hardware fact. On the PW-SH2 the ILI9805 datasheet backs
   the same facts.
 
 ## Registers

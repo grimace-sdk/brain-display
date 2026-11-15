@@ -62,6 +62,14 @@
 #define PANEL_RESET_BIT    0x00010000u
 #define PANEL_RESET_MUX_GPIO 0x3u
 
+/* PW-A7300 panel reset is the LCD_RESET pad 3_30 (MUXSEL7 bits 29:28), driven at
+   mux 0 by the LCDIF's CTRL1 RESET bit. Deep sleep muxes it to GPIO (field 3),
+   which drives low and holds the panel in reset; the LCDIF itself is untouched,
+   so that mux field is the deep-sleep indicator. See panel-handoff.md (A7300). */
+#define PINCTRL_MUXSEL7    0x170
+#define A7300_RESET_MUX_SHIFT 28
+#define A7300_RESET_MUX_MASK  (0x3u << A7300_RESET_MUX_SHIFT)
+
 #define REG_CTRL          0x000
 #define REG_CTRL_SET      0x004
 #define REG_CTRL_CLR      0x008
@@ -81,6 +89,7 @@
 #define CTRL_DATA_SELECT  (1u << 16)
 #define CTRL_CLKGATE      (1u << 30)
 #define CTRL_SFTRST       (1u << 31)
+#define CTRL1_RESET       (1u << 0)
 #define CTRL1_BYTE_PACKING_SHIFT 16
 #define CTRL1_CUR_FRAME_DONE_IRQ (1u << 9)
 #define CTRL1_CUR_FRAME_DONE_IRQ_EN (1u << 13)
@@ -114,6 +123,9 @@ static void panel_configure(void);
 #if defined(BRAIN_BOARD_pwsh2)
 static void panel_reset_pulse(void);
 static void panel_ili9805_init(void);
+#endif
+#if defined(BRAIN_BOARD_pwa7300)
+static void panel_a7300_init(void);
 #endif
 
 static volatile uint32_t *g_lcdif;
@@ -544,6 +556,37 @@ static void panel_ili9805_init(void) {
 }
 #endif
 
+#if defined(BRAIN_BOARD_pwa7300)
+/* Full PW-A7300 controller init, ported from the EBOOT bring-up in the A7300
+   panel-handoff.md (static analysis, cross-checked against Sharp's CE driver, a
+   user-authorised source). Vendor and gamma registers only; MADCTL, COLMOD and
+   TE are left to panel_configure so brain-display's orientation and tear settings
+   win over the table's 36 28 / 34. E2-E5 are the night-light gamma tables. */
+static void panel_a7300_init(void) {
+    panel_command(0xB2); panel_param(0x45); panel_param(0x00); panel_param(0xD9); panel_param(0x00); panel_param(0x00);
+    panel_command(0xB3); panel_param(0x81); panel_param(0x00); panel_param(0x01);
+    panel_command(0xB4); panel_param(0x00);
+    panel_command(0xB5); panel_param(0x02); panel_param(0x11); panel_param(0x50); panel_param(0x00); panel_param(0x80); panel_param(0x45); panel_param(0x45); panel_param(0x00);
+    panel_command(0xB6); panel_param(0x1E); panel_param(0x01); panel_param(0x90); panel_param(0x0A); panel_param(0x02); panel_param(0x58);
+    panel_command(0xB7); panel_param(0x2A); panel_param(0x91); panel_param(0x5C); panel_param(0x06); panel_param(0x08); panel_param(0x0C); panel_param(0x00); panel_param(0x1C); panel_param(0x06); panel_param(0x02); panel_param(0x09);
+    panel_command(0xB9); panel_param(0x00); panel_param(0x32); panel_param(0x01); panel_param(0x40); panel_param(0x02);
+    panel_command(0xC0); panel_param(0xB7); panel_param(0x03);
+    panel_command(0xC1); panel_param(0x72); panel_param(0x01);
+    panel_command(0xC2); panel_param(0x37); panel_param(0x2F); panel_param(0x0C);
+    panel_command(0xC3); panel_param(0x37); panel_param(0x03);
+    panel_command(0xC7); panel_param(0x01); panel_param(0x33); panel_param(0x03);
+    panel_command(0xCA); panel_param(0xBD); panel_param(0x17); panel_param(0x5B); panel_param(0x5B); panel_param(0x64); panel_param(0x11); panel_param(0x66);
+    panel_command(0xDE); panel_param(0x11); panel_param(0x00);
+    panel_command(0xE0); panel_param(0x24); panel_param(0x3F); panel_param(0x0E); panel_param(0x0E); panel_param(0x67); panel_param(0xEE); panel_param(0xEE); panel_param(0xA3); panel_param(0x04);
+    panel_command(0xE1); panel_param(0x24); panel_param(0x3F); panel_param(0x0F); panel_param(0x0E); panel_param(0x78); panel_param(0xEE); panel_param(0xED); panel_param(0x93); panel_param(0x04);
+    panel_command(0xE2); panel_param(0x24); panel_param(0x29); panel_param(0x14); panel_param(0x1C); panel_param(0x67); panel_param(0xDD); panel_param(0xDD); panel_param(0x97); panel_param(0x0B);
+    panel_command(0xE3); panel_param(0x24); panel_param(0x29); panel_param(0x14); panel_param(0x1C); panel_param(0x67); panel_param(0xDD); panel_param(0xDD); panel_param(0x97); panel_param(0x0A);
+    panel_command(0xE4); panel_param(0x24); panel_param(0x2A); panel_param(0x15); panel_param(0x1A); panel_param(0x99); panel_param(0xDD); panel_param(0xED); panel_param(0xA6); panel_param(0x09);
+    panel_command(0xE5); panel_param(0x24); panel_param(0x2A); panel_param(0x15); panel_param(0x1A); panel_param(0x88); panel_param(0xDD); panel_param(0xDD); panel_param(0x97); panel_param(0x0C);
+    brain_log("panel: resume A7300 init");
+}
+#endif
+
 void brain_panel_resume_prepare(void) {
     uint32_t ctrl = reg_read(REG_CTRL);
     brain_log("panel: resume enter");
@@ -577,10 +620,41 @@ void brain_panel_resume_prepare(void) {
         panel_configure();
     }
 #else
-    brain_log("panel: resume SLEEP_OUT");
-    panel_command(DCS_SLEEP_OUT);
-    Sleep(120);
-    panel_configure();
+    {
+        uint32_t muxsel7 = (g_pinctrl != NULL) ? g_pinctrl[PINCTRL_MUXSEL7 / 4] : 0;
+        if ((muxsel7 & A7300_RESET_MUX_MASK) == A7300_RESET_MUX_MASK) {
+            /* Deep sleep muxed the LCD_RESET pad (3_30) to GPIO, which held the
+               panel in reset and lost its registers. Re-assert panel power, hand
+               the reset line back to the LCDIF (mux 0), pulse CTRL1 RESET per
+               EBOOT's timing, then re-send the full init. */
+            brain_log("panel: resume A7300 full re-init");
+            if (g_pinctrl != NULL) {
+                g_pinctrl[(PINCTRL_DOUT + PINCTRL_SET) / 4] = 0x04000000u;
+                Sleep(15);
+                g_pinctrl[(PINCTRL_DOUT + PINCTRL_SET) / 4] = 0x08000000u;
+                Sleep(15);
+                g_pinctrl[(PINCTRL_MUXSEL7 + PINCTRL_CLR) / 4] = A7300_RESET_MUX_MASK;
+            }
+            reg_write(REG_CTRL1_SET, CTRL1_RESET);
+            Sleep(15);
+            reg_write(REG_CTRL1_CLR, CTRL1_RESET);
+            Sleep(15);
+            reg_write(REG_CTRL1_SET, CTRL1_RESET);
+            Sleep(45);
+            panel_a7300_init();
+            panel_command(DCS_SLEEP_OUT);
+            Sleep(100);
+            panel_command(0xDE);
+            panel_param(0x11);
+            panel_param(0x04);
+            panel_configure();
+        } else {
+            brain_log("panel: resume SLEEP_OUT");
+            panel_command(DCS_SLEEP_OUT);
+            Sleep(120);
+            panel_configure();
+        }
+    }
 #endif
     brain_log_value("panel: resume done CTRL", reg_read(REG_CTRL));
     brain_log_value("panel: resume done STAT", reg_read(REG_STAT));
