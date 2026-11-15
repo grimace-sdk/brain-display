@@ -525,7 +525,7 @@ static void publish_framebuffer_info(brain_pdev *pdev) {
                         KEY_SET_VALUE, NULL, &key, NULL) != ERROR_SUCCESS) {
         return;
     }
-    DWORD physical = pdev->framebuffer_physical;
+    DWORD physical = brain_refresh_presenting() ? 0 : pdev->framebuffer_physical;
     DWORD width = (DWORD)pdev->width;
     DWORD height = (DWORD)pdev->height;
     RegSetValueExW(key, L"FramebufferPhysical", 0, REG_DWORD, (const BYTE *)&physical, sizeof(physical));

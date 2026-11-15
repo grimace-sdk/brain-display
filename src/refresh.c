@@ -580,6 +580,21 @@ static int present_owner_exited(void) {
     return GetExitCodeProcess(g_present_owner_handle, &code) && code != STILL_ACTIVE;
 }
 
+/* The board driver's framebuffer-read IOCTL reads the primary by physical
+   address from the registry. During present the primary is stale (frames go to
+   the panel via the PXP), so zero the published address while presenting: the
+   IOCTL then reports not-ready and the screenshot agent falls back to the GDI
+   path, which is redirected to the last presented frame. Restored on present end. */
+static void write_framebuffer_physical(uint32_t physical) {
+    HKEY key;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, L"Software\\Brain\\Display", 0, KEY_SET_VALUE, &key) ==
+        ERROR_SUCCESS) {
+        DWORD value = physical;
+        RegSetValueExW(key, L"FramebufferPhysical", 0, REG_DWORD, (const BYTE *)&value, sizeof(value));
+        RegCloseKey(key);
+    }
+}
+
 int brain_refresh_begin_present(const brain_present_source *source, uint32_t owner_id) {
     int started = 0;
     if (g_thread == NULL) {
@@ -609,6 +624,7 @@ int brain_refresh_begin_present(const brain_present_source *source, uint32_t own
     if (!started) {
         return 0;
     }
+    write_framebuffer_physical(0);
     if (source->flags & BRAIN_PRESENT_FAST_CPU) {
         brain_present_hold_cpu(1);
     }
@@ -633,6 +649,7 @@ void brain_refresh_end_present(void) {
     LeaveCriticalSection(&g_present_lock);
     SetEvent(g_present_done);
     brain_present_hold_cpu(0);
+    write_framebuffer_physical(g_framebuffer_phys);
     brain_refresh_mark_dirty(0, 0, g_width, g_height);
     SetEvent(g_wake);
 }
