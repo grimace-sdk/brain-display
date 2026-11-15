@@ -1162,9 +1162,11 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
             if (query == DRVESC_GETSCREENROTATION || query == DRVESC_SETSCREENROTATION) {
                 return 1;
             }
+#if defined(BRAIN_BOARD_pwa7300)
             if (query == DISPLAY_NIGHT_LIGHT_PREVIEW) {
                 return 1;
             }
+#endif
             if (query == DISPLAY_PANEL_COMMAND && brain_refresh_panel_escapes_enabled()) {
                 return 1;
             }
@@ -1184,6 +1186,7 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
         brain_log_value("escape: panel command bytes", cjIn);
         return brain_refresh_panel_command((const uint8_t *)pvIn, cjIn) ? 0 : (ULONG)-1;
     }
+#if defined(BRAIN_BOARD_pwa7300)
     if (iEsc == DISPLAY_NIGHT_LIGHT_PREVIEW) {
         if (pvIn == NULL || cjIn < 2 * sizeof(ULONG)) {
             return (ULONG)-1;
@@ -1195,6 +1198,7 @@ static ULONG APIENTRY brain_Escape(DHPDEV dhpdev, SURFOBJ *pso, ULONG iEsc, ULON
         brain_refresh_night_light_preview((int)active, strength);
         return 0;
     }
+#endif
     if (iEsc == DRVESC_SETSCREENROTATION) {
         pdev->orientation = cjIn;
         brain_log_value("escape: set rotation dmdo", cjIn);

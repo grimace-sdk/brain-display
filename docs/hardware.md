@@ -60,6 +60,8 @@ Standard MIPI DCS, as 8-bit commands and parameters over the 16-bit bus:
 
 The driver should only need these. The panels' vendor registers (power, gamma, frame rate) are set by the bootloader. See plan.md M3 for what happens across suspend.
 
+Gamma, from device probing: standard DCS commands (inversion `20`/`21`, `MADCTL`) apply immediately. The PW-SH2's ILI9805 analog gamma (`E0`/`E1`) only takes effect after a sleep-in/sleep-out cycle (`10`, then `11` + 120 ms, then `29`); writing it live does nothing. The ILI9805 has no per-colour digital gamma (the per-colour DGC the related ILI9806 added is absent), so it gets no night light. The PW-A7300's panel has per-colour digital gamma (`E2`/`E3` green, `E4`/`E5` blue) that applies live, which is what night light uses there (confirm on the A7300 bench that the live resend takes without a sleep cycle).
+
 ## LCDIF (0x80030000)
 
 Already in system (8080) mode, 16-bit, bus master, when CE starts.

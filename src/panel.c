@@ -603,8 +603,9 @@ void brain_panel_display_on(void) {
  * computed value and resend both polarities of a colour together. The table
  * contents are the panel's own gamma, from our colourtune gamma tool.
  *
- * PW-SH2 (ILI9805): still log-only; its per-colour gamma register is not yet
- * identified. See docs/plan.md M10.
+ * PW-SH2 (ILI9805): no-op. The ILI9805 has no per-colour gamma stage (probed on
+ * device, see docs/plan.md M10), so night light is not offered on the SH2 - the
+ * escape is not advertised there and this does nothing.
  */
 #if defined(BRAIN_BOARD_pwa7300)
 static void send_gamma_table(const uint8_t *table, uint32_t gain) {
@@ -628,7 +629,7 @@ void brain_panel_night_light(uint32_t green_gain, uint32_t blue_gain) {
 }
 #else
 void brain_panel_night_light(uint32_t green_gain, uint32_t blue_gain) {
-    brain_log_value("night: green gain", green_gain);
-    brain_log_value("night: blue gain", blue_gain);
+    (void)green_gain;
+    (void)blue_gain;
 }
 #endif
