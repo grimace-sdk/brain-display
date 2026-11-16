@@ -357,6 +357,22 @@ static int prepare_region(raster_rect dirty, int buf, brain_panel_window *window
         return 0;
     }
 
+#if defined(BRAIN_BOARD_pwsh4)
+    /* The SH4 controller misplaces narrow panel-column windows (device
+       measurement 2026-11-04, and the U-Boot progress bar). Widen every partial
+       update to the full panel-column span; the pages (rows) stay partial. The
+       full span is read from the complete frame, so untouched columns keep their
+       pixels. The panel-column axis is screen Y at angles 0 and 2, screen X at 1
+       and 3 (compose.c frame_to_panel). */
+    if (angle == 1 || angle == 3) {
+        dirty.left = 0;
+        dirty.right = width;
+    } else {
+        dirty.top = 0;
+        dirty.bottom = height;
+    }
+#endif
+
     if (use_pxp()) {
         dirty.left &= ~7;
         dirty.top &= ~7;
