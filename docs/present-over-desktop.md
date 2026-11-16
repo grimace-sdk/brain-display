@@ -2,7 +2,6 @@
 
 Status: proposal for review, not implemented. Pairs with M7 (both treat the
 desktop and the present frame as layers). Target consumer: windowed SDL apps.
-Incorporates review feedback from the device session.
 
 ## Idea
 

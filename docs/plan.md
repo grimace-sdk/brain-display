@@ -3,7 +3,7 @@
 ## Shape
 
 - One source tree, one DLL per board, chosen at compile time (`BRAIN_BOARD=pwsh2` or `pwa7300`): panel geometry, TE pin and edge, LCDIF clock, mapping, pointer support. Outputs `brain-display-pwsh2.dll` and `brain-display-pwa7300.dll`.
-- C, built with grimace. `-Wall -Werror`, as pwsh2-boot does.
+- C, built with grimace, `-Wall -Werror`.
 - Layers: DDI entry and objects; rasteriser (pure C over pixel buffers, testable on the host); refresh (dirty rectangles, PXP, LCDIF, TE, a refresh thread); board.
 - Host tests: the rasteriser compiles natively too. Unit test it against a slow reference implementation (one pixel at a time, every ROP) over random rectangles, formats and clips. That is the main correctness net before any device run.
 
@@ -22,7 +22,7 @@ Status at the 0.1.0-alpha tag: stages 1 to 7 done on the PW-SH2; the PW-A7300 sh
 
 ## Performance Targets
 
-drawbench on the PW-SH2 (pw-a7300 `apps/drawbench`, 2 s per case flat out; CPU at 454 MHz). "Replaced" is the driver this one replaces; Sharp's original is shown for scale. Same screen hashes for all three is the correctness bar.
+drawbench on the PW-SH2 (2 s per case flat out; CPU at 454 MHz). "Replaced" is the driver this one replaces; Sharp's original is shown for scale. Same screen hashes for all three is the correctness bar.
 
 | Case | Replaced ops/s | Sharp ops/s |
 | --- | --- | --- |
@@ -58,8 +58,8 @@ Also from that run: at 20 ops/s, the replaced driver's LCDIF was busy 31% of the
 | Boot to desktop | Correct picture, Start menu, Explorer, Control Panel |
 | Host rasteriser tests | Match the reference implementation |
 | drawbench | Hashes match; ops/s at or above the targets |
-| ddi-probe (pwsh2-boot `ce/drivers/ddi-trace/ddi_probe.c`) | Runs to "done"; screenshots match the replaced driver's |
-| teartest (pw-sh2) bar and flash modes | No tear line, clean full-screen switches |
+| ddi-probe (brainsurgeon `ce/drivers/ddi-trace/ddi_probe.c`) | Runs to "done"; screenshots match the replaced driver's |
+| teartest bar and flash modes | No tear line, clean full-screen switches |
 | Rotation 0/90/180/270 (PW-SH2) | Correct picture and touch at each angle |
 | Suspend and resume, 10 times | Panel returns with correct content, no flash |
 | 30 minutes of mixed use, plus an hour of audio playback (PW-SH2) | No hang, no stuck panel |
@@ -79,7 +79,7 @@ Also from that run: at 20 ops/s, the replaced driver's LCDIF was busy 31% of the
   - **Capture cost, follow-up (parked).** The copy reads the present buffer through its uncached kernel alias, which steals bus time and dips the app ~2s during a screenshot (acceptable for the alpha). A per-call cached VirtualCopy alias to speed the read froze the device on the first screenshot under present (6ff907d, reverted in 94a8aa3) - the likely cause is the per-call map/teardown of a PAGE_PHYSICAL region the PXP and app alias concurrently (VIVT TLB/cache or free-ordering hazard), not stale data. Redo as a device-validated design: map the cached alias once at present open (no per-call churn) plus an explicit invalidate of the range before each read, which needs the CACHE_SYNC discard flag sourced as an interface constant like CACHE_SYNC_WRITEBACK.
   - Open: whether the debug agent's own capture uses the GDI primary-source blit path this hooks or a separate route. Rotation while presenting may need the capture geometry transformed.
 - **M8. DEVINFO default fonts.** Resolved: a zeroed set works. The PW-A7300 boots to the desktop with correct text (menus, labels, titles) with all three `LOGFONTW`s zeroed, so GWES does not require the driver to populate them.
-- **M9. TE SYSINTR constants. Resolved (interface facts).** Two values in the TE code came from off-limits sources: the numeric `IOCTL_HAL_REQUEST_SYSINTR` function code 0x01010098 (function 38; from Platform Builder's `pkfuncs.h`), and the GPIO OAL IRQ numbering 128 + bank * 32 + pin (254 / 272; from NXP's `mx28_irq.h` and notes derived from Sharp's driver), both via the measurement session outside the clean room. The user accepted them as non-protectable platform interface constants rather than run a clean re-derivation sweep; recorded in CLEANROOM.md Exceptions. Confirmed working on the PW-SH2 (SYSINTR 0x1E, TE synced). The measured `PINCTRL` register values are device reads.
+- **M9. TE SYSINTR constants. Resolved (interface facts).** Two values in the TE code came from off-limits sources: the numeric `IOCTL_HAL_REQUEST_SYSINTR` function code 0x01010098 (function 38; from Platform Builder's `pkfuncs.h`), and the GPIO OAL IRQ numbering 128 + bank * 32 + pin (254 / 272; from NXP's `mx28_irq.h` and notes derived from Sharp's driver), both from outside the clean room. The maintainer accepted them as non-protectable platform interface constants rather than run a clean re-derivation sweep; recorded in CLEANROOM.md Exceptions. Confirmed working on the PW-SH2 (SYSINTR 0x1E, TE synced). The measured `PINCTRL` register values are device reads.
 - **M10. Night light panel gamma registers.** The schedule, strength maths and escape 100155 are implemented and host-tested (`nightlight.c`). Per-board gamma write:
   - **PW-A7300. Implemented, pending device tune.** The gain is data byte 1 of the per-colour gamma tables `E2`/`E3` (green) and `E4`/`E5` (blue), each a command plus nine data bytes, the two drive polarities; brain_panel_night_light sets byte 1 from the computed gain and resends both polarities of a colour. The table contents came from our colourtune gamma tool (the panel's own gamma). Tune the warm-end gains on the device with colourtune (escape 100153, PanelEscapes=1).
   - **PW-SH2. Log-only; no per-colour panel gamma on the ILI9805.** The PXP cannot tint RGB565 (its CSC is YUV-to-RGB only, RM 34.2.4, no RGB LUT), and EBOOT's ILI9805 init exposes only whole-panel gamma (`E0`/`E1`). The ILI9806E datasheet (a related part) has a per-colour digital gamma stage on page 2 (registers 00h-3Fh, RCAn/BCAn, enabled by D3GE En_3G), but device probing via sh2dgcprobe (escape 100153) found no such stage on the ILI9805: both page keys (FF FF 98 05 02 and FF FF 98 05 04 02, then 40h En_3G, then a warm flood of 00h-3Fh) produced no tint. Consistent with EBOOT never paging. A software tint is impractical on the SH2 (the staging/present buffers are uncached for DMA, so a per-pixel pass is ~100x slower; see the cost note), so SH2 night light is deferred unless a cached-LUT tint is accepted for its perf cost. Night light ships on the A7300 only.

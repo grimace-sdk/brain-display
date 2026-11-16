@@ -1,6 +1,6 @@
 # DDI Surface
 
-Measured on a PW-SH2 (Sharp's CE 6.0 GWES) and a PW-A7300 (our pointer-enabled GWES) with `ddi-trace.dll`. The shim takes the `ddraw_mx28.dll` slot, forwards every call to the current driver, and records arguments, return values and call counts. The workload was boot, 23 apps, a GDI probe covering every GDI export in the ROM's coredll (pwsh2-boot `ce/drivers/ddi-trace/ddi_probe.c`), rotation to all four angles, suspend and resume, touchpad use (A7300), and full-screen apps. Raw traces are in [../measurements](../measurements/).
+Measured on a PW-SH2 (Sharp's CE 6.0 GWES) and a PW-A7300 (our pointer-enabled GWES) with `ddi-trace.dll`. The shim takes the `ddraw_mx28.dll` slot, forwards every call to the current driver, and records arguments, return values and call counts. The workload was boot, 23 apps, a GDI probe covering every GDI export in the ROM's coredll (brainsurgeon `ce/drivers/ddi-trace/ddi_probe.c`), rotation to all four angles, suspend and resume, touchpad use (A7300), and full-screen apps. Raw traces are in [../measurements](../measurements/).
 
 Types and constants are grimace's `winddi.h`. Where it and this page disagree, the measurement wins; report it to grimace.
 

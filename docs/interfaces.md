@@ -62,4 +62,4 @@ The driver also writes `Orientation` (the DMDO rotation value, read by the rotat
 
 ## Load and Swap
 
-GWES loads the DLL named by `HKLM\System\GDI\Drivers` `Display` (`ddraw_mx28.dll`). pwsh2-boot's `make-boot-nkp.mjs --replace-module ddraw_mx28.dll=brain-display.dll` puts ours in that slot and renames the ROM's copy to `ddraw_mx2_.dll`. The bootloader loads the module from `modules/` beside `boot.nkp` on the card, so rolling back means restoring the previous `boot.nkp` and `modules/` files.
+GWES loads the DLL named by `HKLM\System\GDI\Drivers` `Display` (`ddraw_mx28.dll`). brainsurgeon's `tools/make-boot-nkp.mjs --replace-module ddraw_mx28.dll=brain-display.dll` puts ours in that slot and renames the ROM's copy to `ddraw_mx2_.dll`. The bootloader loads the module from `modules/` beside `boot.nkp` on the card, so rolling back means restoring the previous `boot.nkp` and `modules/` files.

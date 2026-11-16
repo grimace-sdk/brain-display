@@ -1,24 +1,23 @@
 # brain-display
 
-A clean-room Windows CE 6.0 display driver for Sharp Brain PW-SH2 and PW-A7300 (i.MX28), built with [grimace](https://github.com/grimace-sdk/grimace). It replaces the `ddraw_mx28.dll` slot. Drawing goes through its own software rasteriser, tuned for the RGB565 primary surface, and frames go to the command-mode panel through the LCDIF and PXP, timed by the panel's tearing effect (TE) pulse.
+A clean-room Windows CE 6.0 display driver for Sharp Brain PW-SH2, PW-A7300 and PW-SH4 (i.MX28), built with [grimace](https://github.com/grimace-sdk/grimace). It replaces the `ddraw_mx28.dll` slot. Drawing goes through its own software rasteriser, tuned for the RGB565 primary surface, and frames go to the command-mode panel through the LCDIF and PXP, timed by the panel's tearing effect (TE) pulse.
 
-Status: alpha. The driver boots both boards to a full, responsive desktop (correct colours, menus, borders, icons, filled shapes, gradients, transparency, pattern fills, a touchpad cursor) and runs the whole pipeline:
+Status: alpha. The driver boots each board to a full, responsive desktop (correct colours, menus, borders, icons, filled shapes, gradients, transparency, pattern fills, a touchpad cursor) and runs the whole pipeline:
 
 - A host-tested software rasteriser (all ROP3/ROP4, AnyBlt stretch/mirror/convert, TransparentBlt, GradientFill, StrokePath, FillPath, format conversions), checked against a slow reference over random rectangles, formats, clips and ROPs.
 - A PXP + TE refresh: the dirty region is transposed by the PXP into a staging buffer and written over the LCDIF on the tearing-effect pulse, driven by a fixed-N cadence scheduler on a dedicated TE interrupt thread. Tear-free, and faster than the stock driver on every benchmark case.
 - Four-angle rotation, suspend/resume, and a touchpad cursor composited at refresh time.
 - Present mode for full-screen apps: RGB565 buffers presented on TE, with up to 8 PXP overlays (colour-keyed RGB565 or ARGB1555), centred sub-screen buffers, and the 454 MHz CPU hold.
 
-The primary target is the PW-SH2. The PW-A7300 shares the code and builds; its device validation is ongoing.
+All three boards boot to the desktop and run on device. The PW-SH2 is the most exercised; the PW-A7300 and PW-SH4 share the same pipeline and are device-confirmed.
 
 ## Known limitations
 
-- Night light: the schedule, registry settings and the preview escape are implemented, but the panel colour change itself is not applied yet, on either board.
+- Night light applies on the PW-A7300 through the panel's per-colour gamma. The PW-SH2's ILI9805 has no per-colour gamma, so it is not offered there; the PW-SH4's controller gamma is unverified, so it is off there too.
 - `imagelist` colour-to-mono masks and the polygon fill rule have minor differences from the replaced driver (open).
 - Anti-aliased text and some edges differ from Sharp by a least-significant bit, by design (the driver keeps its own rounding).
 - Present mode serves one process at a time and does not rotate while an app presents. A screenshot taken while an app is presenting briefly slows that app.
 - Rotation shows a brief black flash during the transition.
-- The PW-A7300's deep-sleep resume and panel restore are untested on that board.
 
 ## Performance
 
@@ -62,7 +61,7 @@ cmake -S . -B build -G Ninja \
 cmake --build build
 ```
 
-Outputs: `build/brain-display-pwsh2.dll` and `build/brain-display-pwa7300.dll`, each exporting `DrvEnableDriver` and `HALInit`. The board is chosen at compile time (`BRAIN_BOARD_pwsh2`, `BRAIN_BOARD_pwa7300`).
+Outputs: `build/brain-display-pwsh2.dll`, `build/brain-display-pwa7300.dll` and `build/brain-display-pwsh4.dll`, each exporting `DrvEnableDriver` and `HALInit`. The board is chosen at compile time (`BRAIN_BOARD_pwsh2`, `BRAIN_BOARD_pwa7300`, `BRAIN_BOARD_pwsh4`).
 
 ## Host tests
 
@@ -76,7 +75,7 @@ cd build-test && ctest --output-on-failure
 
 ## Device testing
 
-`tools/bundle-pwsh2.sh` builds a PW-SH2 `boot.nkp` with the driver in the `ddraw_mx28.dll` slot, using pwsh2-boot's `make-boot-nkp.mjs`. Copy it to the card over ce-debug, keeping the existing `boot.nkp` as a rollback, and reboot.
+`tools/bundle-pwsh2.sh` builds a PW-SH2 `boot.nkp` with the driver in the `ddraw_mx28.dll` slot, using [brainsurgeon](https://github.com/grimace-sdk/brainsurgeon)'s `tools/make-boot-nkp.mjs`. Copy it to the card, keeping the existing `boot.nkp` as a rollback, and reboot.
 
 ## Present mode
 

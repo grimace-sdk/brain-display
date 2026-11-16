@@ -99,7 +99,7 @@ Deep sleep (not a short sleep) resets the LCDIF block (CTRL comes back with `SFT
 
 Use the TE pin as a GPIO interrupt: set its `PINCTRL` `IRQEN`, `IRQLEVEL` (edge) and `IRQPOL` bits for the edge in the table, clear `IRQSTAT`, and get a SYSINTR for it with `IOCTL_HAL_REQUEST_SYSINTR`. GPIO pins appear as OAL IRQ 128 + bank * 32 + pin. Each interrupt: clear `IRQSTAT` for the pin, then `InterruptDone`. Mask it while idle.
 
-The `PINCTRL` register layout and the measured pin states (`PIN2IRQ`, `IRQLEVEL`, `IRQPOL`, `IRQEN`, `MUXSEL`, `DOE`) are from device register reads. Two values here are accepted **interface facts** (see CLEANROOM.md Exceptions): the numeric `IOCTL_HAL_REQUEST_SYSINTR` function code 0x01010098 (function 38), and the OAL IRQ numbering rule 128 + bank * 32 + pin (254 on the PW-SH2, 272 on the PW-A7300). These came from Platform Builder's `pkfuncs.h` and NXP's `mx28_irq.h` via the measurement session (outside the clean room), and the user accepted them as non-protectable platform constants. Confirmed working on the PW-SH2 (SYSINTR 0x1E, `te: ready`, TE synced).
+The `PINCTRL` register layout and the measured pin states (`PIN2IRQ`, `IRQLEVEL`, `IRQPOL`, `IRQEN`, `MUXSEL`, `DOE`) are from device register reads. Two values here are accepted **interface facts** (see CLEANROOM.md Exceptions): the numeric `IOCTL_HAL_REQUEST_SYSINTR` function code 0x01010098 (function 38), and the OAL IRQ numbering rule 128 + bank * 32 + pin (254 on the PW-SH2, 272 on the PW-A7300). These came from Platform Builder's `pkfuncs.h` and NXP's `mx28_irq.h` (outside the clean room), and the maintainer accepted them as non-protectable platform constants. Confirmed working on the PW-SH2 (SYSINTR 0x1E, `te: ready`, TE synced).
 
 If TE stops, time out after two periods, write anyway, and count it. After five in a row, set the pin up again and put the panel through the recovery above. TE stopping until a cold boot was seen once on the PW-SH2.
 
@@ -129,4 +129,4 @@ Rectangles must be widened to 8-pixel multiples, with an even left edge.
 
 ## CPU Speed
 
-The board driver (`BRD1:`, pwsh2-boot `ce/drivers/board`) scales the CPU between 240 and 454 MHz and can hold it at 454 MHz. Present mode asks for that ([interfaces.md](interfaces.md)).
+The board driver (`BRD1:`, [brain-drivers](https://github.com/grimace-sdk/brain-drivers) `src/board`) scales the CPU between 240 and 454 MHz and can hold it at 454 MHz. Present mode asks for that ([interfaces.md](interfaces.md)).

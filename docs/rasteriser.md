@@ -85,4 +85,4 @@ Everything else must be correct but can be generic.
 
 ## Correctness Reference
 
-drawbench (pw-a7300 `apps/drawbench`) hashes the screen after 48 seeded operations per case. The replaced driver produced the same hashes as Sharp's original, so matching them is the pixel-exact target. The GDI probe (`ddi_probe.c`) gives broader coverage, with screenshots compared across drivers.
+The `drawbench` benchmark hashes the screen after 48 seeded operations per case. The replaced driver produced the same hashes as Sharp's original, so matching them is the pixel-exact target. The GDI probe (`ddi_probe.c`) gives broader coverage, with screenshots compared across drivers.
