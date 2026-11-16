@@ -7,7 +7,7 @@
 
 #include <stdint.h>
 
-#define BRAIN_DISPLAY_VERSION "0.1.0-alpha"
+#define BRAIN_DISPLAY_VERSION "0.1.2-alpha"
 
 typedef struct {
     int32_t screen_width;
