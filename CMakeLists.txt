@@ -21,7 +21,7 @@ set(BRAIN_DISPLAY_SOURCES
     src/nightlight.c
 )
 
-foreach(board pwsh2 pwa7300)
+foreach(board pwsh2 pwa7300 pwsh4)
     grimace_add_library(brain_display_${board} ${BRAIN_DISPLAY_SOURCES}
         OUTPUT brain-display-${board}.dll EXPORTS DrvEnableDriver HALInit)
     target_link_libraries(brain_display_${board} PRIVATE grimace::ceddk)

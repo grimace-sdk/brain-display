@@ -55,11 +55,16 @@ Two narrow exceptions to "not used":
   mode here. That is limited to present mode; the rest of the prototype stays
   off-limits.
 - Static analysis of the device's bootloader (a distinct binary from the display
-  driver) is used for the panel bring-up on both boards: the LCD pin mux, control
+  driver) is used for the panel bring-up on each board: the LCD pin mux, control
   and power GPIO states, the panel reset sequence and timing, and the controller
   init sequence, for restoring the panel after deep sleep. These are the panel's
   own register values, a hardware fact. On the PW-SH2 the ILI9805 datasheet backs
-  the same facts.
+  the same facts. The per-board facts are recorded in the panel-handoff documents
+  (one per board). The PW-SH4 document (`pwsh4-panel-handoff.md`) tags each fact
+  by source; the `pwsh4` board was written from its bootloader-analysis, public
+  datasheet and device-measurement facts only. That document also records facts
+  taken from Sharp's display driver and backlight driver, which, like those
+  drivers themselves, were not used.
 
 ## Registers
 

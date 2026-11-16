@@ -367,8 +367,13 @@ void brain_panel_recover(uint32_t level) {
         panel_command(DCS_SLEEP_OUT);
         Sleep(120);
         panel_command(DCS_DISPLAY_ON);
-#else
+#elif defined(BRAIN_BOARD_pwa7300)
         panel_a7300_reinit();
+        panel_command(DCS_DISPLAY_ON);
+#else
+        panel_command(DCS_SLEEP_OUT);
+        Sleep(120);
+        panel_configure();
         panel_command(DCS_DISPLAY_ON);
 #endif
     }
@@ -646,7 +651,7 @@ void brain_panel_resume_prepare(void) {
         Sleep(120);
         panel_configure();
     }
-#else
+#elif defined(BRAIN_BOARD_pwa7300)
     {
         uint32_t muxsel7 = (g_pinctrl != NULL) ? g_pinctrl[PINCTRL_MUXSEL7 / 4] : 0;
         if ((muxsel7 & A7300_RESET_MUX_MASK) == A7300_RESET_MUX_MASK) {
@@ -661,6 +666,15 @@ void brain_panel_resume_prepare(void) {
             panel_configure();
         }
     }
+#else
+    /* PW-SH4 deep-sleep panel state is not yet measured (pwsh4-panel-handoff.md
+       open points), so only the lightweight resume is done here. A full re-init
+       with the SH4 init table and single-edge reset is added once the deep-sleep
+       behaviour is known. */
+    brain_log("panel: resume SLEEP_OUT");
+    panel_command(DCS_SLEEP_OUT);
+    Sleep(120);
+    panel_configure();
 #endif
     brain_log_value("panel: resume done CTRL", reg_read(REG_CTRL));
     brain_log_value("panel: resume done STAT", reg_read(REG_STAT));
