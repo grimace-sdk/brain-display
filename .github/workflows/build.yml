@@ -40,7 +40,7 @@ jobs:
           tar xf "$name.tar.xz" -C "$RUNNER_TEMP"
           echo "GRIMACE_LLVM_ROOT=$RUNNER_TEMP/$name" >> "$GITHUB_ENV"
 
-      - name: Build both boards
+      - name: Build all boards
         run: |
           cmake -S . -B build -G Ninja \
             -DCMAKE_TOOLCHAIN_FILE="$PWD/grimace/cmake/toolchain.cmake" \
@@ -57,7 +57,7 @@ jobs:
       - name: Collect DLLs
         run: |
           mkdir -p dist
-          cp build/brain-display-pwsh2.dll build/brain-display-pwa7300.dll dist/
+          cp build/brain-display-*.dll dist/
 
       - uses: actions/upload-artifact@v7
         with:
