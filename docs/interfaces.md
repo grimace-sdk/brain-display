@@ -53,6 +53,7 @@ All under `HKLM\Software\Brain\Display`, all DWORD. The refresh thread re-reads 
 | `Cadence` | 1 | 1 picks N per pending send length (every TE for partial updates, every second TE for full frames); 0 forces every-TE sends. | Live |
 | `TeOffsetMs` | 2 | Milliseconds to wait after the TE edge before starting the send, to keep the send clear of the panel scan. | Live |
 | `TeOffsetUs` | 0 | Non-zero overrides `TeOffsetMs` with a QPC-spun sub-millisecond offset. Test knob for the tear sweep; leave 0 in production. | Live |
+| `Settle` | 4000 | Microseconds to hold a new dirty region (from its first mark) before pushing, so a multi-step draw such as a popup menu item's fill, text and icon coalesces into one frame instead of showing half-drawn when a TE edge lands mid-draw. Bounded by the first mark, so continuous drawing is not held back. 0 disables. | Live |
 | `Snapshot` | 1 | 1 holds a draw lock across the flush and PXP so a frame is tear-free; 0 drops the lock for raw throughput. | Live |
 | `Log` | 0 | 1 emits per-second refresh stats and enables `OutputDebugString`; 0 is silent apart from one-shot init and anomaly lines, which are still batched to the SD log. Debug output blocks on the debug UART, so keep it 0 for timing. | Live |
 | `PxpFlip` | absent | Test knob for tuning the per-angle PXP rotate/flip on a board. 0-3 forces the flip bits for every angle (bit 0 HFLIP, bit 1 VFLIP); absent or above 3 uses the built-in per-angle mapping. Leave unset in production. | Live |

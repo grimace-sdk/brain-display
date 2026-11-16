@@ -55,12 +55,15 @@ static CRITICAL_SECTION g_snapshot_lock;
 static int g_snapshot_lock_ready;
 static int g_dirty_valid;
 static raster_rect g_dirty;
+static uint32_t g_dirty_first_mark_us;
 
 #define BRAIN_CADENCE_DEFAULT 1
 #define BRAIN_TE_OFFSET_DEFAULT 2
+#define BRAIN_SETTLE_DEFAULT 4000
 static DWORD g_cadence_enabled = BRAIN_CADENCE_DEFAULT;
 static DWORD g_te_offset_ms = BRAIN_TE_OFFSET_DEFAULT;
 static DWORD g_te_offset_us = 0;
+static DWORD g_settle_us = BRAIN_SETTLE_DEFAULT;
 static DWORD g_log_enabled = 0;
 
 #define BRAIN_NIGHT_WARM_GREEN_DEFAULT 0x18u
@@ -266,6 +269,7 @@ void brain_refresh_mark_dirty(int32_t left, int32_t top, int32_t right, int32_t 
         g_dirty.right = right;
         g_dirty.bottom = bottom;
         g_dirty_valid = 1;
+        g_dirty_first_mark_us = brain_us();
     } else {
         if (left < g_dirty.left) g_dirty.left = left;
         if (top < g_dirty.top) g_dirty.top = top;
@@ -296,6 +300,21 @@ static int dirty_pending(void) {
     valid = g_dirty_valid;
     LeaveCriticalSection(&g_lock);
     return valid;
+}
+
+/* True once a pending dirty region has sat for g_settle_us since its first mark.
+   Holding a region that briefly lets a multi-step draw (a popup menu item's fill,
+   then text, then icon) accumulate into one frame instead of pushing a half-drawn
+   item when a TE edge lands mid-draw. The window is bounded by the first mark, not
+   the last, so continuous drawing (drawbench) is never held back: by the next TE
+   edge its first mark is already a whole period old. Settle 0 disables it. */
+static int dirty_settled(void) {
+    int settled;
+    EnterCriticalSection(&g_lock);
+    settled = g_dirty_valid &&
+              (g_settle_us == 0 || (brain_us() - g_dirty_first_mark_us) >= g_settle_us);
+    LeaveCriticalSection(&g_lock);
+    return settled;
 }
 
 static int use_pxp(void) {
@@ -987,7 +1006,7 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
             armed = 1;
         }
 
-        if (brain_current_board.te_prepare_ahead && !prepared && dirty_pending()) {
+        if (brain_current_board.te_prepare_ahead && !prepared && dirty_settled()) {
             raster_rect dirty;
             if (take_dirty(&dirty)) {
                 prepared = prepare_timed(dirty, cur, &windows[cur], &last_prepare_us);
@@ -1030,7 +1049,7 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
                 continue;
             }
             if (n >= 2 && edges_since + 1 == (uint32_t)n) {
-                if (!prepared) {
+                if (!prepared && dirty_settled()) {
                     raster_rect dirty;
                     if (take_dirty(&dirty)) {
                         prepared = prepare_timed(dirty, cur, &windows[cur], &last_prepare_us);
@@ -1044,6 +1063,9 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
         }
 
         if (!prepared) {
+            if (!force && !dirty_settled()) {
+                continue;
+            }
             raster_rect dirty;
             if (!take_dirty(&dirty)) {
                 continue;
@@ -1206,6 +1228,7 @@ static void read_settle_config(void) {
         g_cadence_enabled = read_reg_dword(key, L"Cadence", BRAIN_CADENCE_DEFAULT);
         g_te_offset_ms = read_reg_dword(key, L"TeOffsetMs", (DWORD)brain_current_board.te_offset_ms);
         g_te_offset_us = read_reg_dword(key, L"TeOffsetUs", 0);
+        g_settle_us = read_reg_dword(key, L"Settle", BRAIN_SETTLE_DEFAULT);
         g_log_enabled = read_reg_dword(key, L"Log", 0);
         g_panel_escapes = read_reg_dword(key, L"PanelEscapes", 0);
         brain_pxp_set_flip_override(read_reg_dword(key, L"PxpFlip", 0xFFFFFFFF));
