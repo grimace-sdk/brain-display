@@ -134,6 +134,10 @@ static void panel_ili9805_init(void);
 static void panel_a7300_init(void);
 static void panel_a7300_reinit(void);
 #endif
+#if defined(BRAIN_BOARD_pwsh4)
+static void panel_sh4_init(void);
+static void panel_sh4_reinit(void);
+#endif
 
 static volatile uint32_t *g_lcdif;
 static volatile uint32_t *g_clkctrl;
@@ -401,10 +405,7 @@ void brain_panel_recover(uint32_t level) {
         panel_a7300_reinit();
         panel_command(DCS_DISPLAY_ON);
 #else
-        panel_command(DCS_SLEEP_OUT);
-        Sleep(120);
-        panel_configure();
-        panel_clear_gap();
+        panel_sh4_reinit();
         panel_command(DCS_DISPLAY_ON);
 #endif
     }
@@ -653,6 +654,80 @@ static void panel_a7300_reinit(void) {
 }
 #endif
 
+#if defined(BRAIN_BOARD_pwsh4)
+/* Full PW-SH4 controller init, from the EBOOT bring-up in pwsh4-panel-handoff.md
+   (static analysis of Sharp's EBOOT, a user-approved source). The controller is
+   an unidentified ILI98xx (EXTC ff ff 98 26). Used after a deep-sleep reset, when
+   the panel has lost its configuration. MADCTL 0xD0, COLMOD and TE come from the
+   table; CASET/PASET and the boot splash are omitted, as the frame push sets the
+   window. */
+static void panel_sh4_init(void) {
+    panel_command(0xFF); panel_param(0xFF); panel_param(0x98); panel_param(0x26);
+    panel_command(0xDF); panel_param(0x06); panel_param(0x22); panel_param(0x20);
+    panel_command(0xB6); panel_param(0x03);
+    panel_command(0xF7); panel_param(0x01);
+    panel_command(0xBC);
+    panel_param(0x21); panel_param(0x06); panel_param(0xA0); panel_param(0x02); panel_param(0x01);
+    panel_param(0x01); panel_param(0x80); panel_param(0x03); panel_param(0x00); panel_param(0x80);
+    panel_param(0x00); panel_param(0x00); panel_param(0x20); panel_param(0x20); panel_param(0xFF);
+    panel_param(0xE0); panel_param(0x00); panel_param(0x00); panel_param(0x00); panel_param(0xC0);
+    panel_param(0x08); panel_param(0x00); panel_param(0x00); panel_param(0x00); panel_param(0x00);
+    panel_param(0x00);
+    panel_command(0xBD);
+    panel_param(0x01); panel_param(0x23); panel_param(0x45); panel_param(0x67);
+    panel_param(0x01); panel_param(0x23); panel_param(0x45); panel_param(0x67);
+    panel_command(0xBE);
+    panel_param(0x12); panel_param(0x22); panel_param(0x22); panel_param(0x22); panel_param(0x87);
+    panel_param(0x96); panel_param(0xAA); panel_param(0xDB); panel_param(0xCC); panel_param(0xBD);
+    panel_param(0x78); panel_param(0x69); panel_param(0x22); panel_param(0x22); panel_param(0x22);
+    panel_param(0x22); panel_param(0x22);
+    panel_command(DCS_COLMOD); panel_param(0x55);
+    panel_command(0xFA); panel_param(0x08); panel_param(0x00); panel_param(0x00); panel_param(0x02); panel_param(0x08);
+    panel_command(0xB1); panel_param(0x00); panel_param(0x58); panel_param(0x03);
+    panel_command(0xB4); panel_param(0x02); panel_param(0x00); panel_param(0x00);
+    panel_command(0xC1); panel_param(0x10); panel_param(0x78); panel_param(0x6A);
+    panel_command(0xC7); panel_param(0x42); panel_param(0x00); panel_param(0x57); panel_param(0x00);
+    panel_command(0xED); panel_param(0x7F); panel_param(0x0F); panel_param(0xF7); panel_param(0x01);
+    panel_command(0xE0);
+    panel_param(0x00); panel_param(0x07); panel_param(0x12); panel_param(0x12); panel_param(0x0D);
+    panel_param(0x1E); panel_param(0xCC); panel_param(0x0B); panel_param(0x00); panel_param(0x07);
+    panel_param(0x03); panel_param(0x05); panel_param(0x0C); panel_param(0x39); panel_param(0x37);
+    panel_param(0x00);
+    panel_command(0xE1);
+    panel_param(0x00); panel_param(0x07); panel_param(0x13); panel_param(0x0F); panel_param(0x0B);
+    panel_param(0x16); panel_param(0x76); panel_param(0x05); panel_param(0x06); panel_param(0x0A);
+    panel_param(0x08); panel_param(0x03); panel_param(0x0D); panel_param(0x18); panel_param(0x13);
+    panel_param(0x00);
+    panel_command(DCS_MADCTL); panel_param(0xD0);
+    panel_command(DCS_SET_TEAR_ON); panel_param(0x00);
+    brain_log("panel: sh4 init");
+}
+
+/* Full PW-SH4 panel bring-up for a deep-sleep resume or L3 recovery. The common
+   resume path has already re-asserted power (0_26/0_27), restored the pinmux,
+   LCDIF registers and the clock; here pulse the reset line (4_16, a single
+   low-to-high edge with EBOOT's 135 ms wait), re-send the init, sleep out, and
+   blank the un-presented gap. The caller sends display-on and the frame. Every
+   SH4 wake is a cold resume (the pins and LCDIF are lost even on a short sleep,
+   device measurement), so this runs unconditionally. */
+static void panel_sh4_reinit(void) {
+    if (g_pinctrl != NULL) {
+        g_pinctrl[(PANEL_RESET_MUXSEL + PINCTRL_SET) / 4] = PANEL_RESET_MUX_GPIO;
+        g_pinctrl[(PANEL_RESET_DOE + PINCTRL_SET) / 4] = PANEL_RESET_BIT;
+        g_pinctrl[(PANEL_RESET_DOUT + PINCTRL_CLR) / 4] = PANEL_RESET_BIT;
+        Sleep(10);
+        g_pinctrl[(PANEL_RESET_DOUT + PINCTRL_SET) / 4] = PANEL_RESET_BIT;
+        Sleep(135);
+    }
+    brain_log("panel: sh4 reinit reset");
+    panel_sh4_init();
+    panel_command(DCS_SLEEP_OUT);
+    Sleep(120);
+    panel_clear_gap();
+    brain_log("panel: sh4 reinit done");
+}
+#endif
+
 void brain_panel_resume_prepare(void) {
     uint32_t ctrl = reg_read(REG_CTRL);
     brain_log("panel: resume enter");
@@ -701,15 +776,11 @@ void brain_panel_resume_prepare(void) {
         }
     }
 #else
-    /* PW-SH4 deep-sleep panel state is not yet measured (pwsh4-panel-handoff.md
-       open points), so only the lightweight resume is done here. A full re-init
-       with the SH4 init table and single-edge reset is added once the deep-sleep
-       behaviour is known. */
-    brain_log("panel: resume SLEEP_OUT");
-    panel_command(DCS_SLEEP_OUT);
-    Sleep(120);
-    panel_configure();
-    panel_clear_gap();
+    /* Every PW-SH4 wake is a cold resume: the pins and LCDIF are lost even on a
+       short suspend (device measurement), so the panel always needs the full
+       bring-up. CTRL shows SFTRST|CLKGATE, handled by the soft reset above. */
+    brain_log("panel: resume SH4 full re-init");
+    panel_sh4_reinit();
 #endif
     brain_log_value("panel: resume done CTRL", reg_read(REG_CTRL));
     brain_log_value("panel: resume done STAT", reg_read(REG_STAT));
