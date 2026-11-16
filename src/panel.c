@@ -5,12 +5,17 @@
  */
 #include <windows.h>
 #include <grimace/extras.h>
+#include <string.h>
 
 #include "board.h"
 #include "panel.h"
 #include "irq.h"
 #include "nightlight.h"
 #include "log.h"
+
+#if defined(BRAIN_BOARD_pwsh4)
+LPVOID AllocPhysMem(DWORD size, DWORD protect, DWORD alignment, DWORD flags, PULONG physical);
+#endif
 
 #define LCDIF_IRQ 38
 
@@ -306,6 +311,31 @@ int brain_panel_transfer(uint32_t phys, int32_t pixels_per_row, int32_t rows) {
     return brain_panel_transfer_wait();
 }
 
+#if defined(BRAIN_BOARD_pwsh4)
+/* The PW-SH4 presents 848 of the panel's 854 pages; the last BRAIN_PANEL_GAP are
+   never drawn, so they keep EBOOT's or U-Boot's leftover pixels. Blank them once
+   with a black transfer. The pages are physical, so this is independent of the
+   screen-to-panel orientation. */
+static uint32_t g_gap_clear_phys;
+
+static void panel_clear_gap(void) {
+    if (g_gap_clear_phys == 0) {
+        DWORD bytes = (DWORD)BRAIN_PANEL_WIDTH * BRAIN_PANEL_GAP * 2;
+        ULONG phys = 0;
+        void *base = AllocPhysMem(bytes, PAGE_READWRITE | PAGE_NOCACHE, 0, 0, &phys);
+        if (base == NULL || phys == 0) {
+            brain_log("panel: gap clear alloc failed");
+            return;
+        }
+        memset(base, 0, bytes);
+        g_gap_clear_phys = (uint32_t)phys;
+    }
+    brain_panel_set_window(0, BRAIN_PANEL_WIDTH, BRAIN_PANEL_HEIGHT, BRAIN_PANEL_GAP);
+    brain_panel_transfer(g_gap_clear_phys, BRAIN_PANEL_WIDTH, BRAIN_PANEL_GAP);
+    brain_log("panel: gap cleared");
+}
+#endif
+
 uint32_t brain_panel_reg_ctrl(void) {
     return reg_read(REG_CTRL);
 }
@@ -374,6 +404,7 @@ void brain_panel_recover(uint32_t level) {
         panel_command(DCS_SLEEP_OUT);
         Sleep(120);
         panel_configure();
+        panel_clear_gap();
         panel_command(DCS_DISPLAY_ON);
 #endif
     }
@@ -425,6 +456,9 @@ int brain_panel_init(void) {
 
     panel_configure();
     brain_irq_init(&g_lcdif_irq, LCDIF_IRQ);
+#if defined(BRAIN_BOARD_pwsh4)
+    panel_clear_gap();
+#endif
     brain_log("panel: init done");
     return 1;
 }
@@ -675,6 +709,7 @@ void brain_panel_resume_prepare(void) {
     panel_command(DCS_SLEEP_OUT);
     Sleep(120);
     panel_configure();
+    panel_clear_gap();
 #endif
     brain_log_value("panel: resume done CTRL", reg_read(REG_CTRL));
     brain_log_value("panel: resume done STAT", reg_read(REG_STAT));

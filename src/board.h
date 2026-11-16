@@ -46,6 +46,7 @@ extern const brain_board brain_current_board;
 #define BRAIN_SCREEN_HEIGHT  480
 #define BRAIN_PANEL_WIDTH    480
 #define BRAIN_PANEL_HEIGHT   848
+#define BRAIN_PANEL_GAP      6
 #define BRAIN_HAS_POINTER    0
 #define BRAIN_BOARD_NAME     "pwsh4"
 #endif
