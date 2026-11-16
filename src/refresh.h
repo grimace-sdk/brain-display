@@ -20,6 +20,7 @@ void brain_cursor_hide(void);
 
 void brain_refresh_suspend(void);
 void brain_refresh_resume(void);
+void brain_refresh_request_resume(void);
 void brain_refresh_push_full(void);
 void brain_refresh_set_rotation(int angle, int32_t width, int32_t height, int32_t stride);
 

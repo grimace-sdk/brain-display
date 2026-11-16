@@ -1126,18 +1126,8 @@ static VOID APIENTRY brain_PowerHandler(DHPDEV dhpdev, BOOL off) {
         brain_panel_suspend();
         brain_log_buffered("PowerHandler: suspend done");
     } else {
-        brain_log("PowerHandler: resume enter");
-        brain_panel_resume_prepare();
-        brain_pxp_resume();
-        brain_te_recover();
-        brain_log("PowerHandler: resume push full");
-        brain_refresh_push_full();
-        brain_log("PowerHandler: resume push done");
-        brain_panel_display_on();
-        brain_refresh_resume();
-        brain_log("PowerHandler: resume done");
-        brain_log_hold_file_io(5000);
-        brain_log_set_suspended(0);
+        brain_log_buffered("PowerHandler: resume signal");
+        brain_refresh_request_resume();
     }
 }
 

@@ -90,6 +90,7 @@ static HANDLE g_wake;
 static HANDLE g_pause_ack;
 static volatile LONG g_running;
 static volatile LONG g_paused;
+static volatile LONG g_resume_pending;
 static uint32_t g_xfer_fail_streak;
 static uint32_t g_te_timeout_streak;
 
@@ -910,6 +911,8 @@ static void run_present(HANDLE te_tick) {
     }
 }
 
+static void run_resume_work(void);
+
 static DWORD WINAPI refresh_thread(LPVOID parameter) {
     (void)parameter;
     CeSetThreadPriority(GetCurrentThread(), BRAIN_REFRESH_PRIORITY);
@@ -931,6 +934,10 @@ static DWORD WINAPI refresh_thread(LPVOID parameter) {
     HANDLE te_tick = brain_te_tick_handle();
 
     while (g_running) {
+        if (g_resume_pending) {
+            run_resume_work();
+            continue;
+        }
         night_light_tick();
         panel_command_tick();
         if (g_presenting && !g_paused) {
@@ -1101,6 +1108,32 @@ void brain_refresh_resume(void) {
        force the next tick to re-apply night light (only if it was ever active). */
     g_night_last_strength = 0xFFFFFFFFu;
     brain_refresh_mark_dirty(0, 0, g_width, g_height);
+}
+
+/* The D0 power handler calls this and returns at once. The actual re-init blocks
+   (reset-pulse Sleeps, sleep-out wait, a full frame), and a power handler runs at
+   a boosted priority where any yield trips the kernel's power-handler guard, so
+   the work runs on the refresh thread instead. SetEvent only marks the (lower
+   priority) thread runnable; it does not block the caller. */
+void brain_refresh_request_resume(void) {
+    g_resume_pending = 1;
+    if (g_wake != NULL) {
+        SetEvent(g_wake);
+    }
+}
+
+static void run_resume_work(void) {
+    g_resume_pending = 0;
+    brain_log("refresh: resume work");
+    brain_panel_resume_prepare();
+    brain_pxp_resume();
+    brain_te_recover();
+    brain_refresh_push_full();
+    brain_panel_display_on();
+    brain_refresh_resume();
+    brain_log_hold_file_io(5000);
+    brain_log_set_suspended(0);
+    brain_log("refresh: resume done");
 }
 
 /* Pause the refresh thread and wait until it parks, so geometry never changes
